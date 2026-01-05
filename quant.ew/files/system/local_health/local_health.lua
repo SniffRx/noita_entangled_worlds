@@ -560,11 +560,13 @@ function module.on_world_update()
     local hp_new, max_hp_new, has_hp = util.get_ent_health(ctx.my_player.entity)
     if not ctx.my_player.currently_polymorphed and has_hp and hp_new <= 0 then
         -- Restore the player back to small amount of hp.
+        -- checked
         local new_hp = 3 * max_hp_new / 20
         if ctx.proxy_opt.no_notplayer then
             new_hp = new_hp * 5
         end
-        local final_hp = math.max(new_hp, math.min(2 / 5, max_hp_new))
+        -- local final_hp = math.max(new_hp, math.min(2 / 5, max_hp_new))
+        local final_hp = math.max(max_hp_new / 2, 1) -- минимум 1 HP
         util.set_ent_health(ctx.my_player.entity, { final_hp, max_hp_new })
         for _, child in ipairs(EntityGetAllChildren(ctx.my_player.entity) or {}) do
             if EntityHasTag(child, "no_heal_in_meat_biome") then
