@@ -791,8 +791,9 @@ ctx.cap.health = {
                 local _, max_hp_new, has_hp = util.get_ent_health(ctx.my_player.entity)
                 if not ctx.my_player.currently_polymorphed and has_hp then
                     -- Restore the player back to small amount of hp.
-                    local new_hp = 3 * max_hp_new / 20
-                    local final_hp = math.max(new_hp, math.min(2 / 5, max_hp_new))
+                    -- local new_hp = 3 * max_hp_new / 20
+                    -- local final_hp = math.max(new_hp, math.min(2 / 5, max_hp_new))
+                       local final_hp = math.max(max_hp_new / 2, 1) -- минимум 1 HP
                     util.set_ent_health(ctx.my_player.entity, { final_hp, max_hp_new })
                 end
                 player_died()
