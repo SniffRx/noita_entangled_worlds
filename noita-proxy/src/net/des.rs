@@ -7,7 +7,7 @@ use shared::des::{
     DesToProxy, FullEntityData, Gid, ProxyToDes, REQUEST_AUTHORITY_RADIUS, UpdateOrUpload,
     UpdatePosition,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::bookkeeping::save_state::{SaveState, SaveStateEntry};
 
@@ -96,6 +96,8 @@ impl DesManager {
                     entity.counter = counter;
                     entity.phys = phys;
                     entity.synced_var = synced_var;
+                } else if self.entity_storage.entities.is_empty() {
+                    debug!("Ignoring stale entity update after DES storage reset: {gid:?}");
                 } else {
                     warn!("Failed to find entity {gid:?} to update");
                 }

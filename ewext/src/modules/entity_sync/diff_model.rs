@@ -410,8 +410,14 @@ impl LocalDiffModelTracker {
             && let Some(vel) =
                 entity_manager.try_get_first_component::<VelocityComponent>(ComponentTag::None)
         {
+            let is_shop_spell = entity_manager
+                .try_get_first_component::<ItemCostComponent>(ComponentTag::None)
+                .map(|cost| cost.cost().unwrap_or(0) > 0)
+                .unwrap_or(false);
             let (cx, cy) = entity_manager.camera_pos();
-            if ((cx - x) as f32).powi(2) + ((cy - y) as f32).powi(2) > 512.0 * 512.0 {
+            if is_shop_spell
+                || ((cx - x) as f32).powi(2) + ((cy - y) as f32).powi(2) > 512.0 * 512.0
+            {
                 vel.set_gravity_y(0.0)?;
                 vel.set_air_friction(10.0)?;
             } else {
@@ -1850,6 +1856,11 @@ impl RemoteDiffModel {
                 entity_manager.set_components_with_tag_enabled(
                     const { ComponentTag::from_str("shop_cost") },
                     false,
+                )?;
+            } else {
+                entity_manager.set_components_with_tag_enabled(
+                    const { ComponentTag::from_str("shop_cost") },
+                    true,
                 )?;
             }
         }

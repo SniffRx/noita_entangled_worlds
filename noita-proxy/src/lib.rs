@@ -2703,11 +2703,15 @@ fn display_with_labels(
         })
     });
 }
+#[allow(dead_code, unreachable_code)]
 fn add_per_status_ui(
     report: &net::steam_networking::ConnectionStatusReport,
     steam: &steam_helper::SteamState,
     ui: &mut Ui,
 ) {
+    add_per_status_ui_clean(report, steam, ui);
+    return;
+
     ui.label("Name");
     ui.label("Status");
     ui.label("Ping");
@@ -2758,6 +2762,71 @@ fn add_per_status_ui(
             }
             net::steam_networking::PerPeerStatus::NoFurtherInfo => {
                 ui.label("NoI❓")
+                    .on_hover_text("Connected, but no further info available.");
+            }
+        }
+        ui.end_row();
+    }
+}
+
+fn add_per_status_ui_clean(
+    report: &net::steam_networking::ConnectionStatusReport,
+    steam: &steam_helper::SteamState,
+    ui: &mut Ui,
+) {
+    ui.label("Name");
+    ui.label("Status");
+    ui.label("Ping");
+    ui.label("LocQ").on_hover_text(
+        "Local connection quality reported by Steam. 100% means no recent local send loss.",
+    );
+    ui.label("RemQ").on_hover_text(
+        "Remote connection quality reported by Steam. 100% means no recent receive loss.",
+    );
+    ui.label("In");
+    ui.label("Out");
+    ui.label("MaxSendRate");
+    ui.label("PenUnr")
+        .on_hover_text("Pending unreliable messages waiting in SteamNetworkingSockets.");
+    ui.label("PenRel").on_hover_text(
+        "Pending reliable messages waiting in SteamNetworkingSockets. Sustained non-zero values can mean backlog.",
+    );
+    ui.label("UnAck").on_hover_text(
+        "Reliable messages sent but not acknowledged yet. Sustained non-zero values can mean packet loss or a stalled peer.",
+    );
+    ui.end_row();
+
+    for PerPeerStatusEntry { peer, status } in &report.per_peer_statuses {
+        let name = steam.get_user_name((*peer).into());
+        ui.label(&name);
+        match status {
+            net::steam_networking::PerPeerStatus::Connected { realtimeinfo } => {
+                ui.label("OK").on_hover_text("Connected");
+                ui.monospace(format!("{} ms", realtimeinfo.ping()));
+                ui.monospace(format!(
+                    "{:.2}%",
+                    realtimeinfo.connection_quality_local() * 100.0
+                ));
+                ui.monospace(format!(
+                    "{:.2}%",
+                    realtimeinfo.connection_quality_remote() * 100.0
+                ));
+                ui.monospace(format!("{} B/s", realtimeinfo.in_bytes_per_sec()));
+                ui.monospace(format!("{} B/s", realtimeinfo.out_bytes_per_sec()));
+                ui.monospace(format!("{} B/s", realtimeinfo.send_rate_bytes_per_sec()));
+                ui.monospace(format!("{}", realtimeinfo.pending_unreliable()));
+                ui.monospace(format!("{}", realtimeinfo.pending_reliable()));
+                ui.monospace(format!("{}", realtimeinfo.sent_unacked_reliable()));
+            }
+            net::steam_networking::PerPeerStatus::AwaitingIncoming => {
+                ui.label("Await")
+                    .on_hover_text("Awaiting incoming connection from this peer.");
+            }
+            net::steam_networking::PerPeerStatus::ConnectionPending => {
+                ui.label("Pending").on_hover_text("Connection pending.");
+            }
+            net::steam_networking::PerPeerStatus::NoFurtherInfo => {
+                ui.label("No info")
                     .on_hover_text("Connected, but no further info available.");
             }
         }
