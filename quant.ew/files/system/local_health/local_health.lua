@@ -525,98 +525,20 @@ local last_hp
 
 local last_active
 
-local last_mana
-
-local last_max_mana
-
-local function get_active_wand_mana(entity)
-    local inventory = EntityGetFirstComponentIncludingDisabled(entity, "Inventory2Component")
-    if inventory == nil then
-        return nil, nil
-    end
-    local active_item = ComponentGetValue2(inventory, "mActiveItem")
-    if active_item == nil or active_item == 0 then
-        return nil, nil
-    end
-    local ability = EntityGetFirstComponentIncludingDisabled(active_item, "AbilityComponent")
-    if ability == nil or not ComponentGetValue2(ability, "use_gun_script") then
-        return nil, nil
-    end
-    return ComponentGetValue2(ability, "mana"), ComponentGetValue2(ability, "mana_max")
-end
-
-local function fmt_resource(current, maximum)
-    if current == nil or maximum == nil or maximum <= 0 then
-        return "--"
-    end
-    return string.format("%d/%d", math.floor(current + 0.5), math.floor(maximum + 0.5))
-end
-
-local function status_for_player(peer_id, player_data)
-    if peer_id == ctx.my_id then
-        local hp, max_hp = util.get_ent_health(ctx.my_player.entity)
-        local mana, max_mana = get_active_wand_mana(ctx.my_player.entity)
-        return {
-            is_alive = not GameHasFlagRun("ew_flag_notplayer_active"),
-            hp = hp,
-            max_hp = max_hp,
-            mana = mana,
-            max_mana = max_mana,
-        }
-    end
-    return player_data.status
-end
-
-local function draw_status_hud()
-    GuiStartFrame(gui)
-    GuiZSet(gui, 10)
-    local x = 2
-    local y = 16
-    GuiText(gui, x, y, "Players")
-    y = y + 10
-    for peer_id, player_data in pairs(ctx.players) do
-        local status = status_for_player(peer_id, player_data)
-        if status ~= nil then
-            local name = player_fns.nickname_of_peer(peer_id)
-            local hp = fmt_resource((status.hp or 0) * 25, (status.max_hp or 0) * 25)
-            local mp = fmt_resource(status.mana, status.max_mana)
-            local marker = ""
-            if status.is_alive == false then
-                marker = " down"
-            end
-            GuiText(gui, x, y, string.format("%s  HP %s  MP %s%s", name, hp, mp, marker))
-            y = y + 9
-        end
-    end
-end
-
 function module.on_world_update()
     local notplayer_active = GameHasFlagRun("ew_flag_notplayer_active")
     local hp, max_hp = util.get_ent_health(ctx.my_player.entity)
-    local mana, max_mana = get_active_wand_mana(ctx.my_player.entity)
-    if
-        GameGetFrameNum() % 17 == 3
-        or hp ~= last_hp
-        or mana ~= last_mana
-        or max_mana ~= last_max_mana
-        or last_active ~= notplayer_active
-    then
+    if GameGetFrameNum() % 17 == 3 or hp ~= last_hp or last_active ~= notplayer_active then
         last_active = notplayer_active
         last_hp = hp
-        last_mana = mana
-        last_max_mana = max_mana
         local status = {
             is_alive = not notplayer_active,
             hp = hp,
             max_hp = max_hp,
-            mana = mana,
-            max_mana = max_mana,
         }
         ctx.my_player.status = status
         rpc.send_status(status)
     end
-
-    draw_status_hud()
 
     if ctx.proxy_opt.no_notplayer and notplayer_active then
         local x, y = EntityGetTransform(ctx.my_player.entity)
@@ -656,6 +578,7 @@ function module.on_world_update()
         player_died()
     end
     if ctx.proxy_opt.no_notplayer and first and notplayer_active then
+        GuiStartFrame(gui)
         local w, h = GuiGetScreenDimensions(gui)
         local note = "find potion mimic player at last point of death, throw at full hp to revive"
         local tw, th = GuiGetTextDimensions(gui, note)

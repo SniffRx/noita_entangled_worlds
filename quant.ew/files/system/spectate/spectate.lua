@@ -317,6 +317,29 @@ local function number_of_players()
     return i
 end
 
+local function draw_text_with_shadow(x, y, text)
+    GuiColorSetForNextWidget(gui, 0, 0, 0, 0.85)
+    GuiText(gui, x + 1, y + 1, text)
+    GuiColorSetForNextWidget(gui, 1, 1, 1, 1)
+    GuiText(gui, x, y, text)
+end
+
+local function draw_spectated_bar_owner(gui_started)
+    if cam_target == nil or cam_target.entity == ctx.my_player.entity then
+        return gui_started
+    end
+    if not gui_started then
+        GuiStartFrame(gui)
+        GuiZSet(gui, 11)
+        gui_started = true
+    end
+    local w = GuiGetScreenDimensions(gui)
+    local text = player_fns.nickname_of_peer(camera_player_id)
+    local tw = GuiGetTextDimensions(gui, text)
+    draw_text_with_shadow(math.max(2, w - 86 - tw), 5, text)
+    return gui_started
+end
+
 local last_len
 
 local last_ent
@@ -388,9 +411,11 @@ function spectate.on_world_update()
     set_camera_pos()
     ctx.spectating_over_peer_id = camera_player_id
 
+    local gui_started = false
     if GameHasFlagRun("ew_flag_notplayer_active") and not has_switched and not ctx.proxy_opt.no_notplayer then
         GuiStartFrame(gui)
         GuiZSet(gui, 11)
+        gui_started = true
         local w, h = GuiGetScreenDimensions(gui)
         local text
         if GameGetIsGamepadConnected() then
@@ -401,6 +426,7 @@ function spectate.on_world_update()
         local tw, th = GuiGetTextDimensions(gui, text)
         GuiText(gui, w - 2 - tw, h - 1 - th, text)
     end
+    gui_started = draw_spectated_bar_owner(gui_started)
     if cam_target.entity ~= ctx.my_player.entity then
         local inv_spec = EntityGetFirstComponent(cam_target.entity, "InventoryGuiComponent")
         local inv_me = EntityGetFirstComponent(ctx.my_player.entity, "InventoryGuiComponent")

@@ -2,7 +2,7 @@ use std::{
     io::{BufReader, BufWriter, Read, Write},
     marker::PhantomData,
     net::{SocketAddr, TcpStream},
-    sync::mpsc::{self, RecvError, TryRecvError},
+    sync::mpsc::{self, RecvError, SyncSender, TryRecvError, TrySendError},
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -23,9 +23,11 @@ fn read_one<T: DecodeOwned>(mut buf: impl Read) -> eyre::Result<T> {
 }
 
 pub struct MessageSocket<Inbound, Outbound> {
-    socket: BufWriter<TcpStream>,
+    send_messages: Option<SyncSender<Vec<u8>>>,
+    shutdown_socket: TcpStream,
     recv_messages: mpsc::Receiver<eyre::Result<Inbound>>,
     reader_thread: Option<JoinHandle<()>>,
+    writer_thread: Option<JoinHandle<()>>,
     _phantom: PhantomData<fn() -> Outbound>,
 }
 
@@ -33,6 +35,7 @@ impl<Inbound: DecodeOwned + Send + 'static, Outbound: Encode> MessageSocket<Inbo
     pub fn new(socket: TcpStream) -> eyre::Result<Self> {
         socket.set_write_timeout(Some(Duration::from_secs(10)))?;
         let (sender, recv_messages) = mpsc::channel();
+        let (send_messages, outbound) = mpsc::sync_channel::<Vec<u8>>(4096);
         let reader_thread = Some(thread::spawn({
             let socket = socket.try_clone()?;
             move || {
@@ -49,11 +52,33 @@ impl<Inbound: DecodeOwned + Send + 'static, Outbound: Encode> MessageSocket<Inbo
                 }
             }
         }));
+        let writer_thread = Some(thread::spawn({
+            let socket = socket.try_clone()?;
+            move || {
+                let mut socket = BufWriter::new(socket);
+                while let Ok(encoded) = outbound.recv() {
+                    let Ok(len) = u32::try_from(encoded.len()) else {
+                        break;
+                    };
+                    if socket.write_all(&u32::to_le_bytes(len)).is_err() {
+                        break;
+                    }
+                    if socket.write_all(&encoded).is_err() {
+                        break;
+                    }
+                    if socket.flush().is_err() {
+                        break;
+                    }
+                }
+            }
+        }));
 
         Ok(Self {
-            socket: BufWriter::new(socket),
+            send_messages: Some(send_messages),
+            shutdown_socket: socket,
             recv_messages,
             reader_thread,
+            writer_thread,
             _phantom: PhantomData,
         })
     }
@@ -78,33 +103,33 @@ impl<Inbound: DecodeOwned + Send + 'static, Outbound: Encode> MessageSocket<Inbo
         }
     }
 
-    // Surely doing a blocking write won't be a problem over a loopback interface.
     pub fn write(&mut self, value: &Outbound) -> eyre::Result<()> {
         let encoded = bitcode::encode(value);
-        self.socket
-            .write_all(&u32::to_le_bytes(
-                u32::try_from(encoded.len()).wrap_err("Message too large to be sent")?,
-            ))
-            .wrap_err("Couldn't write length to stream")?;
-        self.socket
-            .write_all(&encoded)
-            .wrap_err("Couldn't write message body to stream")?;
+        u32::try_from(encoded.len()).wrap_err("Message too large to be sent")?;
+        let Some(send_messages) = &self.send_messages else {
+            bail!("Message socket writer disconnected");
+        };
+        match send_messages.try_send(encoded) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => bail!("Message socket outbound queue is full"),
+            Err(TrySendError::Disconnected(_)) => bail!("Message socket writer disconnected"),
+        }
         Ok(())
     }
 
     pub fn flush(&mut self) -> eyre::Result<()> {
-        self.socket.flush()?;
         Ok(())
     }
 }
 
 impl<Inbound, Outbound> Drop for MessageSocket<Inbound, Outbound> {
     fn drop(&mut self) {
-        self.socket
-            .get_mut()
-            .shutdown(std::net::Shutdown::Both)
-            .ok();
+        self.shutdown_socket.shutdown(std::net::Shutdown::Both).ok();
+        self.send_messages.take();
         if let Some(handle) = self.reader_thread.take() {
+            handle.join().ok();
+        }
+        if let Some(handle) = self.writer_thread.take() {
             handle.join().ok();
         }
         info!("Message socket dropped");

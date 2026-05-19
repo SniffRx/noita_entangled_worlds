@@ -1357,14 +1357,15 @@ impl EntityManager {
     pub fn set_cache(&mut self, cache: bool) {
         self.cache.clear();
         self.has_ran = false;
-        self.use_cache = cache;
+        self.use_cache = !cache;
     }
     pub fn init_frame_num(&mut self) -> eyre::Result<()> {
-        if self.frame_num == -1 {
-            self.frame_num = raw::game_get_frame_num()?;
-        } else {
-            self.frame_num += 1;
+        let frame_num = raw::game_get_frame_num()?;
+        if self.frame_num != frame_num {
+            self.cache.clear();
+            self.has_ran = false;
         }
+        self.frame_num = frame_num;
         Ok(())
     }
     pub fn frame_num(&self) -> i32 {

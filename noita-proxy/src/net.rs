@@ -1124,6 +1124,26 @@ impl NetManager {
     ) {
         match msg {
             NoitaOutbound::Raw(raw_msg) => {
+                if raw_msg.is_empty() {
+                    error!("Empty raw message from mod");
+                    return;
+                }
+                if raw_msg[0] & 8 > 0 {
+                    let msg_to_send = NetMsg::ModRaw {
+                        data: raw_msg[1..].to_owned(),
+                    };
+                    let reliable = raw_msg[0] & 4 > 0;
+                    self.send(
+                        self.peer.host_id(),
+                        &msg_to_send,
+                        if reliable {
+                            Reliability::Reliable
+                        } else {
+                            Reliability::Unreliable
+                        },
+                    );
+                    return;
+                }
                 match raw_msg[0] & 0b11 {
                     // Message to proxy
                     1 => {
