@@ -62,27 +62,27 @@ jobs:
           name: noita-proxy-linux.zip
           path: target/noita-proxy-linux.zip
 
-  build-proxy-macos:
-    name: Build proxy for macos
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: noita-proxy -> target
+  # build-proxy-macos:
+  #   name: Build proxy for macos
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: noita-proxy -> target
 
-      - name: Build Macos proxy release
-        run: cargo build --release
-        working-directory: ./noita-proxy
+  #     - name: Build Macos proxy release
+  #       run: cargo build --release
+  #       working-directory: ./noita-proxy
 
-      - name: Create archives
-        run: python scripts/ci_make_archives.py macos
+  #     - name: Create archives
+  #       run: python scripts/ci_make_archives.py macos
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: noita-proxy-macos-arm64.zip
-          path: target/noita-proxy-macos.zip
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: noita-proxy-macos-arm64.zip
+  #         path: target/noita-proxy-macos.zip
 
   build-proxy-windows:
     name: Build proxy for windows
@@ -112,7 +112,7 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
-    needs: [build-mod, build-proxy-linux, build-proxy-windows, build-proxy-macos]
+    needs: [build-mod, build-proxy-linux, build-proxy-windows]
 
     steps:
       - uses: actions/checkout@v4
