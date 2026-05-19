@@ -1,5 +1,5 @@
 use eframe::{Frame, NativeOptions};
-use egui::{CentralPanel, Color32, ComboBox, Context, Ui, UiBuilder};
+use egui::{CentralPanel, Color32, ComboBox, Ui, UiBuilder};
 use libc::{SIGCONT, SIGSTOP, kill, pid_t};
 use std::collections::HashMap;
 use std::env::args;
@@ -36,8 +36,8 @@ fn main() {
     .unwrap();
 }
 impl eframe::App for App {
-    fn update(&mut self, ctx: &Context, _: &mut Frame) {
-        CentralPanel::default().show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut Ui, _: &mut Frame) {
+        CentralPanel::default().show_inside(ui, |ui| {
             let rect = ui.max_rect();
             let (top, rect) = rect.split_top_bottom_at_y(rect.height() * 0.035);
             ui.scope_builder(
@@ -187,6 +187,32 @@ impl eframe::App for App {
                                             ui.separator();
                                         }
                                     }
+                                    Data::VecRef(refs, ptr, new_addr, size, n) => {
+                                        if !refs.is_empty() {
+                                            ui.label(
+                                                refs.iter()
+                                                    .map(|(a, b)| format!("0x{a:08x}->0x{b:08x}"))
+                                                    .collect::<Vec<String>>()
+                                                    .join(","),
+                                            );
+                                            ui.separator();
+                                        }
+                                        ui.label(format!("0x{new_addr:08x}"));
+                                        ui.label(format!("0x{ptr:08x}"));
+                                        ui.label(format!("{size}"));
+                                        ui.label(format!("{}", (ptr - new_addr) / 4));
+                                        ui.separator();
+                                        ui.label(format!("0x{n:08x}"));
+                                        ui.label(format!("{n:032b}"));
+                                        ui.label(format!("{n:010}"));
+                                        if n.cast_signed() < 0 {
+                                            ui.label(format!("{:010}", n.cast_signed()));
+                                        }
+                                        ui.label(f32::from_bits(*n).to_string());
+                                        if let Ok(v) = String::from_utf8(n.to_le_bytes().to_vec()) {
+                                            ui.label(v);
+                                        }
+                                    }
                                 }
                             }
                         });
@@ -217,6 +243,7 @@ pub enum DisplayType {
 pub enum Data {
     Struct(Vec<(u32, u32)>),
     Values(Vec<(u32, u32)>, u32),
+    VecRef(Vec<(u32, u32)>, u32, u32, u32, u32),
 }
 pub struct Reader {
     mem: File,
@@ -251,7 +278,18 @@ impl Reader {
         }
         self.read_byte(addr - 4)
     }
-    #[allow(unused)]
+    fn find_start(&self, addr: u32, count: u32) -> Option<(u32, u32)> {
+        for new_addr in (addr.saturating_sub(count)..addr).rev() {
+            if let Some(size) = self.get_size(new_addr) {
+                if new_addr + size <= addr {
+                    return None;
+                }
+                return Some((new_addr, size));
+            }
+        }
+        None
+    }
+    #[allow(dead_code)]
     fn read_unsized(&self, addr: u32) -> Option<Vec<u32>> {
         let size = self.get_size(addr)?;
         self.read(addr, size as usize)
@@ -261,7 +299,7 @@ impl Reader {
         self.mem.read_exact_at(&mut buf, addr as u64).ok()?;
         Some(u32::from_le_bytes(buf))
     }
-    #[allow(unused)]
+    #[allow(dead_code)]
     fn read(&self, addr: u32, size: usize) -> Option<Vec<u32>> {
         let size = (size + 0x11) & !0x11;
         let mut buf = vec![0; size];
@@ -318,8 +356,9 @@ impl PartialEq for Struct {
 pub enum Elem {
     Ref(Box<Elem>, u32, u32),
     Struct(Struct, u32, usize),
-    VFTable(u32),
+    VFTable(String, u32),
     Array(Vec<Elem>, usize),
+    UsizeInAlloc(u32, u32, u32, u32),
     Usize(u32),
     Recursive(u32),
     TooLarge(u32),
@@ -335,7 +374,7 @@ impl PartialEq for Elem {
             (Elem::Array(r1, _), Elem::Array(r2, _)) => r1 == r2,
             (Elem::Ref(r1, _, _), Elem::Ref(r2, _, _)) => r1 == r2,
             (Elem::Struct(r1, _, _), Elem::Struct(r2, _, _)) => r1 == r2,
-            (Elem::VFTable(_), Elem::VFTable(_)) => true,
+            (Elem::VFTable(_, _), Elem::VFTable(_, _)) => true,
             (Elem::Usize(_), Elem::Usize(_)) => true,
             (Elem::Recursive(r1), Elem::Recursive(r2)) => r1 == r2,
             (Elem::Failed(_), Elem::Failed(_)) => true,
@@ -360,8 +399,9 @@ impl Elem {
         match self {
             Elem::Ref(_, v, _) => *v,
             Elem::Struct(_, v, _) => *v,
-            Elem::VFTable(v) => *v,
+            Elem::VFTable(_, v) => *v,
             Elem::Array(_, _) => 0,
+            Elem::UsizeInAlloc(v, _, _, _) => *v,
             Elem::Usize(v) => *v,
             Elem::Recursive(v) => *v,
             Elem::TooLarge(v) => *v,
@@ -456,6 +496,45 @@ impl Elem {
                     });
                 return resp.body_returned.flatten();
             }
+            &mut Elem::UsizeInAlloc(ptr, new_addr, size, value) => {
+                if ui
+                    .colored_label(
+                        Color32::WHITE,
+                        format!(
+                            "      {}",
+                            Elem::UsizeInAlloc(ptr, new_addr, size, value).print(
+                                count,
+                                entry,
+                                Vec::new(),
+                                display_type
+                            )
+                        ),
+                    )
+                    .hovered()
+                {
+                    return Some(Data::VecRef(
+                        mem::take(&mut refs),
+                        ptr,
+                        new_addr,
+                        size,
+                        value,
+                    ));
+                }
+            }
+            s @ &mut Elem::Usize(v) => {
+                let button = ui.button(format!(
+                    "     {}",
+                    Elem::Usize(v).print(count, entry, Vec::new(), display_type)
+                ));
+                if button.clicked()
+                    && let Some((new_addr, size)) = reader.find_start(v, 65536)
+                {
+                    *s = Elem::UsizeInAlloc(v, new_addr, size, reader.read_byte(v).unwrap());
+                    return Some(Data::Values(mem::take(&mut refs), v));
+                } else if button.hovered() {
+                    return Some(Data::Values(mem::take(&mut refs), v));
+                }
+            }
             s => {
                 if ui
                     .colored_label(
@@ -491,8 +570,9 @@ impl Elem {
     pub fn size(&self) -> usize {
         match self {
             Elem::Ref(_, _, _)
-            | Elem::VFTable(_)
+            | Elem::VFTable(_, _)
             | Elem::Usize(_)
+            | Elem::UsizeInAlloc(_, _, _, _)
             | Elem::Recursive(_)
             | Elem::Failed(_)
             | Elem::Null
@@ -532,7 +612,7 @@ impl Elem {
         let addr_size = mem.get_size(reference).unwrap_or(u32::MAX);
         if let Some((name, size)) = map.get(&table) {
             if Some(name.as_ref()) == parent {
-                Elem::VFTable(table)
+                Elem::VFTable(name.to_string(), table)
             } else {
                 Elem::from_addr(
                     reference,
@@ -572,12 +652,10 @@ impl Struct {
         map: &HashMap<u32, (String, usize)>,
         addrs: &mut Vec<u32>,
     ) -> &mut Vec<(String, Elem)> {
-        if self.fields.is_some() {
-            self.fields.as_mut().unwrap()
-        } else {
+        if self.fields.is_none() {
             self.fields = Some(self.get_fields(mem, map, addrs));
-            self.fields.as_mut().unwrap()
         }
+        self.fields.as_mut().unwrap()
     }
     fn get_fields(
         &self,
@@ -590,7 +668,7 @@ impl Struct {
         if self.skip {
             fields.push((
                 "f0".to_string(),
-                Elem::VFTable(mem.read_byte(self.reference).unwrap()),
+                Elem::VFTable(self.name.clone(), mem.read_byte(self.reference).unwrap()),
             ));
             i += 1;
         }
@@ -692,7 +770,7 @@ impl Struct {
                 .collect::<Vec<String>>()
                 .join(""),
             if array.is_empty() {
-                DisplayType::Hex.print(&v)
+                DisplayType::Hex.print(v)
             } else {
                 String::new()
             }
@@ -720,7 +798,7 @@ impl Elem {
                 )
             }
             Elem::Struct(s, v, _) => s.print(count, e, *v, array),
-            Elem::Usize(v) => {
+            &Elem::Usize(v) => {
                 format!(
                     "{e}: {}{}usize{} {}",
                     "[".repeat(array.len()),
@@ -737,7 +815,44 @@ impl Elem {
                     }
                 )
             }
-            Elem::Recursive(v) => {
+            &Elem::UsizeInAlloc(ptr, new_addr, size, value) => {
+                if value == 0 {
+                    format!(
+                        "{e}: {}{}[{size}]0x{new_addr:08x}[{}]=null{} {}",
+                        "[".repeat(array.len()),
+                        "&".repeat(count),
+                        (ptr - new_addr) / 4,
+                        array
+                            .iter()
+                            .map(|a| format!("; {}]", display_size(*a)))
+                            .collect::<Vec<String>>()
+                            .join(""),
+                        if array.is_empty() {
+                            display_type.print(value)
+                        } else {
+                            String::new()
+                        }
+                    )
+                } else {
+                    format!(
+                        "{e}: {}{}[{size}]0x{new_addr:08x}[{}]=usize{} {}",
+                        "[".repeat(array.len()),
+                        "&".repeat(count),
+                        (ptr - new_addr) / 4,
+                        array
+                            .iter()
+                            .map(|a| format!("; {}]", display_size(*a)))
+                            .collect::<Vec<String>>()
+                            .join(""),
+                        if array.is_empty() {
+                            display_type.print(value)
+                        } else {
+                            String::new()
+                        }
+                    )
+                }
+            }
+            &Elem::Recursive(v) => {
                 format!(
                     "{e}: {}{}recursive{} {}",
                     "[".repeat(array.len()),
@@ -754,9 +869,9 @@ impl Elem {
                     }
                 )
             }
-            Elem::VFTable(v) => {
+            Elem::VFTable(n, v) => {
                 format!(
-                    "{e}: {}{}vftable{} {}",
+                    "{e}: {}{}vftable<{n}>{} {}",
                     "[".repeat(array.len()),
                     "&".repeat(count),
                     array
@@ -765,13 +880,13 @@ impl Elem {
                         .collect::<Vec<String>>()
                         .join(""),
                     if array.is_empty() {
-                        display_type.print(v)
+                        display_type.print(*v)
                     } else {
                         String::new()
                     }
                 )
             }
-            Elem::TooLarge(v) => {
+            &Elem::TooLarge(v) => {
                 format!(
                     "{e}: {}{}large{} {}",
                     "[".repeat(array.len()),
@@ -788,7 +903,7 @@ impl Elem {
                     }
                 )
             }
-            Elem::Failed(v) => {
+            &Elem::Failed(v) => {
                 format!(
                     "{e}: {}{}failed{} {}",
                     "[".repeat(array.len()),
@@ -829,7 +944,7 @@ fn display_size(n: usize) -> String {
     }
 }
 impl DisplayType {
-    fn print(self, n: &u32) -> String {
+    fn print(self, n: u32) -> String {
         match self {
             DisplayType::Hex => {
                 format!("{n:08x}")
@@ -844,7 +959,7 @@ impl DisplayType {
                 format!("{:010}", n.cast_signed())
             }
             DisplayType::Float => {
-                format!("{}", f32::from_bits(*n))
+                format!("{}", f32::from_bits(n))
             }
             DisplayType::Str => String::from_utf8(n.to_le_bytes().to_vec()).unwrap_or_default(),
             DisplayType::None => String::new(),

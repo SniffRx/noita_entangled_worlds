@@ -247,7 +247,7 @@ local function allow_notplayer_perk(perk_id)
 end
 
 local function reduce_hp()
-    local p = 100 - ctx.proxy_opt.health_lost_on_revive
+    local p = 100 - (ctx.proxy_opt.health_lost_on_revive or 0)
     if p ~= 100 then
         if ctx.proxy_opt.global_hp_loss then
             rpc.loss_hp()
@@ -306,26 +306,49 @@ local function reset_cast_state_if_has_any_other_item(player_data)
     end
 end
 
+local function fake_polymorph_into_entity(entity_path)
+    local player_entity = ctx.my_player.entity
+    local x, y = EntityGetTransform(player_entity)
+    local notplayer = EntityLoad(entity_path, x, y)
+    np.SetPlayerEntity(notplayer)
+
+    EntityAddTag(notplayer, "ew_notplayer")
+    EntityAddTag(notplayer, "polymorphed")
+    EntityAddTag(notplayer, "polymorphed_player")
+
+    GlobalsSetValue("ew_local_player_dead", tostring(base64.encode(util.serialize_entity(player_entity))))
+    EntityKill(player_entity)
+
+    ctx.my_player.entity = notplayer
+
+    return notplayer
+end
+
+function fake_unpolymorph()
+    local notplayer = ctx.my_player.entity
+    local x, y = EntityGetTransform(notplayer)
+    local base64_string = tostring(GlobalsGetValue("ew_local_player_dead", ""))
+
+    assert(not (base64_string == nil or base64_string == ""), "SERIALIZED PLAYER ENTITY STRING IS MISSING !!!")
+
+    local player_entity = util.deserialize_entity(base64.decode(base64_string), x, y)
+    np.SetPlayerEntity(player_entity)
+
+    EntityKill(notplayer)
+    ctx.my_player.entity = player_entity
+
+    return player_entity
+end
+
 local function no_notplayer()
-    local ent = LoadGameEffectEntityTo(ctx.my_player.entity, "mods/quant.ew/files/system/local_health/poly.xml")
-    EntityAddTag(ent + 1, "ew_notplayer")
-
-    EntityAddComponent2(ent + 1, "LuaComponent", {
-        script_item_picked_up = "mods/quant.ew/files/system/potion_mimic/pickup.lua",
-        script_throw_item = "mods/quant.ew/files/system/potion_mimic/pickup.lua",
-    })
-
-    for _, com in ipairs(EntityGetComponent(ent + 1, "LuaComponent")) do
-        if ComponentGetValue2(com, "script_death") == "data/scripts/items/potion_glass_break.lua" then
-            EntityRemoveComponent(ent + 1, com)
-            break
-        end
+    local entity_name
+    if ctx.proxy_opt.local_health_alternate_dont_run then
+        entity_name = "mods/quant.ew/files/system/heart_statue/heart_statue.xml"
+    else
+        entity_name = "mods/quant.ew/files/system/heart_statue/heart_statue_running.xml"
     end
-    for _, com in ipairs(EntityGetComponent(ent + 1, "DamageModelComponent")) do
-        EntityRemoveComponent(ent + 1, com)
-    end
-
-    polymorph.switch_entity(ent + 1)
+    local ent = fake_polymorph_into_entity(entity_name)
+    polymorph.switch_entity(ent)
 end
 
 rpc.opts_everywhere()
@@ -355,8 +378,6 @@ local function player_died()
         return
     end
 
-    -- This may look like a hack, but it allows to use existing poly machinery to change player entity AND to store the original player for later,
-    -- Which is, like, perfect.
     GameAddFlagRun("ew_flag_notplayer_active")
     if ctx.proxy_opt.no_notplayer then
         no_notplayer()
@@ -391,11 +412,9 @@ local function player_died()
     local _, max_hp = util.get_ent_health(ctx.my_player.entity)
     local cap = util.get_ent_health_cap(ctx.my_player.entity)
 
-    local ent = LoadGameEffectEntityTo(
-        ctx.my_player.entity,
-        "mods/quant.ew/files/system/local_health/notplayer/poly_effect.xml"
-    )
-    ctx.my_player.entity = ent + 1
+    local notplayer = fake_polymorph_into_entity("mods/quant.ew/files/system/local_health/notplayer/notplayer.xml")
+    ctx.my_player.entity = notplayer
+
     if ctx.proxy_opt.physics_damage then
         local damage = EntityGetFirstComponentIncludingDisabled(ctx.my_player.entity, "DamageModelComponent")
         ComponentSetValue2(damage, "physics_objects_damage", true)
@@ -431,7 +450,7 @@ local function player_died()
         end
     end
 
-    polymorph.switch_entity(ent + 1, true)
+    polymorph.switch_entity(notplayer, true)
 
     remove_healthbar_locally()
     inventory_helper.set_item_data(item_data, ctx.my_player, true, false)
@@ -525,9 +544,24 @@ local last_hp
 
 local last_active
 
+-- only check via parent, if entity is too deep this returns false
+-- assumes that inventory quick always named `inventory_quick`
+local function is_entity_in_quick_inventory(entity)
+    local parent = EntityGetParent(entity)
+    if parent == nil then
+        return false
+    end
+    local name = EntityGetName(parent)
+    if name ~= "inventory_quick" then
+        return false
+    end
+    return true
+end
+
 function module.on_world_update()
     local notplayer_active = GameHasFlagRun("ew_flag_notplayer_active")
-    local hp, max_hp = util.get_ent_health(ctx.my_player.entity)
+    local player_ent = ctx.my_player.entity
+    local hp, max_hp = util.get_ent_health(player_ent)
     if GameGetFrameNum() % 17 == 3 or hp ~= last_hp or last_active ~= notplayer_active then
         last_active = notplayer_active
         last_hp = hp
@@ -539,14 +573,21 @@ function module.on_world_update()
         rpc.send_status(status)
     end
 
-    if ctx.proxy_opt.no_notplayer and notplayer_active then
+    local heart_statue_should_revive =
+        ctx.proxy_opt.no_notplayer
+        and notplayer_active
+        and not is_entity_in_quick_inventory(player_ent)
+
+    if heart_statue_should_revive then
         local x, y = EntityGetTransform(ctx.my_player.entity)
         for _, ent in ipairs(EntityGetInRadiusWithTag(x, y, 14, "drillable")) do
-            if EntityGetFilename(ent) == "data/entities/items/pickup/heart_fullhp_temple.xml" then
+            ent_filename = EntityGetFilename(ent)
+            if ent_filename == "data/entities/items/pickup/heart_fullhp.xml"
+                or ent_filename == "data/entities/items/pickup/heart_fullhp_temple.xml"
+            then
                 GameRemoveFlagRun("ew_flag_notplayer_active")
                 EntityKill(ent)
-                EntityRemoveFromParent(ctx.my_player.entity)
-                ent = end_poly_effect(ctx.my_player.entity)
+                local ent = fake_unpolymorph()
                 remove_stuff(ent)
                 polymorph.switch_entity(ent)
                 spectate.disable_throwing(false, ctx.my_player.entity)
@@ -581,7 +622,7 @@ function module.on_world_update()
     if ctx.proxy_opt.no_notplayer and first and notplayer_active then
         GuiStartFrame(gui)
         local w, h = GuiGetScreenDimensions(gui)
-        local note = "find potion mimic player at last point of death, throw at full hp to revive"
+        local note = "Have your friend find your Heart Statue at last point of death, throw at full HP pickup to revive"
         local tw, th = GuiGetTextDimensions(gui, note)
         GuiText(gui, w - 2 - tw, h - 1 - th, note)
     end
@@ -609,16 +650,18 @@ function module.on_world_update_host()
         for _, player_data in pairs(ctx.players) do
             local is_alive = player_data.status.is_alive
             if is_alive then
-                if gameover_frame_check == 0 then
-                    gameover_frame_check = GameGetFrameNum()
-                end
                 any_player_alive = true
+                break
             end
         end
         if not any_player_alive then
+            if gameover_frame_check == 0 then
+                gameover_frame_check = GameGetFrameNum() + 120
+            elseif gameover_frame_check <= GameGetFrameNum() then
+                gameover_primed = true
+            end
+        else
             gameover_frame_check = 0
-        elseif gameover_frame_check + 60 <= GameGetFrameNum() then
-            gameover_primed = true
         end
         if gameover_primed and not any_player_alive then
             print("Triggering a game over")
@@ -656,7 +699,9 @@ function module.on_client_polymorphed(peer_id, playerdata)
         script_damage_about_to_be_received = "mods/quant.ew/files/system/local_health/immortal.lua",
     })
     local damage_model = EntityGetFirstComponentIncludingDisabled(playerdata.entity, "DamageModelComponent")
-    ComponentSetValue2(damage_model, "wait_for_kill_flag_on_death", true)
+    if damage_model ~= nil then
+        ComponentSetValue2(damage_model, "wait_for_kill_flag_on_death", true)
+    end
 end
 
 --[[function module.health()
@@ -683,7 +728,7 @@ end
 
 rpc.opts_reliable()
 function rpc.loss_hp()
-    local p = 100 - ctx.proxy_opt.health_lost_on_revive
+    local p = 100 - (ctx.proxy_opt.health_lost_on_revive or 0)
     local hp, max_hp = util.get_ent_health(ctx.my_player.entity)
     util.set_ent_health(ctx.my_player.entity, { (hp * p) / 100, (max_hp * p) / 100 })
 end
@@ -725,7 +770,9 @@ ctx.cap.health = {
             local item_data = inventory_helper.get_item_data(ctx.my_player)
             remove_inventory()
             GameRemoveFlagRun("ew_flag_notplayer_active")
-            ctx.my_player.entity = end_poly_effect(ctx.my_player.entity)
+
+            local player_entity = fake_unpolymorph()
+            rpc.remove_homing(true)
             remove_stuff()
             inventory_helper.set_item_data(item_data, ctx.my_player, true, false)
             local controls = EntityGetFirstComponentIncludingDisabled(ctx.my_player.entity, "ControlsComponent")

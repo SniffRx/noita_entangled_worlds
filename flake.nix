@@ -13,28 +13,40 @@
     };
   };
 
-  outputs = { self, nixpkgs, rust-overlay, systems, }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      systems,
+    }:
     let
       inherit (nixpkgs) lib;
       eachSystem = lib.genAttrs (import systems);
-      pkgsFor = eachSystem (system:
+      pkgsFor = eachSystem (
+        system:
         import nixpkgs {
           localSystem = system;
           overlays = [ self.overlays.default ];
-        });
-    in {
+        }
+      );
+    in
+    {
       overlays = import ./nix/overlays { inherit self lib rust-overlay; };
 
       packages = lib.mapAttrs (system: pkgs: {
-        default = self.packages.${system}.noita-proxy;
-        inherit (pkgs) noita-proxy;
+        default = self.packages.${system}.noita_proxy;
+        inherit (pkgs) noita_proxy;
       }) pkgsFor;
 
-      devShells = lib.mapAttrs
-        (system: pkgs: { default = pkgs.callPackage ./nix/shell.nix { }; })
-        pkgsFor;
+      devShells = lib.mapAttrs (system: pkgs: {
+        default = pkgs.callPackage ./nix/shell.nix { };
 
-      formatter =
-        eachSystem (system: nixpkgs.legacyPackages.${system}.nixfmt-classic);
+        # devShells for cross-compiling. You may use ./nix/cross/build-* directly instead.
+        cross-ewext = pkgs.callPackage ./nix/cross/ewext.nix { };
+        cross-noita_proxy = pkgs.callPackage ./nix/cross/noita_proxy.nix { };
+      }) pkgsFor;
+
+      formatter = eachSystem (system: nixpkgs.legacyPackages.${system}.nixfmt-tree);
     };
 }

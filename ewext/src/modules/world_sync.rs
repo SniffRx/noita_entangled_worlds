@@ -1,20 +1,17 @@
-use crate::modules::world_sync::change_tracker::ChangeTracker;
 use crate::modules::{Module, ModuleCtx};
 use crate::my_peer_id;
 use eyre::{ContextCompat, eyre};
-use noita_api::addr_grabber::Globals;
+use noita_api::addr_grabber::GlobalsMut;
 use noita_api::heap::Ptr;
 use noita_api::noita::types::*;
 use noita_api::noita::world::ParticleWorldState;
 use rayon::iter::{IntoParallelIterator as _, ParallelIterator as _};
 use shared::NoitaOutbound;
 use shared::world_sync::{
-    CHUNK_SIZE, ChunkCoord, NoitaWorldUpdate, Pixel, ProxyToWorldSync, WorldSyncToProxy,
+    CHUNK_SIZE, ChunkCoord, NoitaWorldUpdate, PixelRunner, ProxyToWorldSync, WorldSyncToProxy,
 };
-use std::iter::Peekable;
+use std::iter::{Peekable, Skip};
 use std::mem::MaybeUninit;
-
-mod change_tracker;
 
 /// Iterates over elements that are only present in one of two sorted inputs.
 struct SortedSymmetricDifference<I1, I2, T>
@@ -103,25 +100,51 @@ where
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let Some(a_element) = self.a.peek() else {
-                return self.b.next();
-            };
-            let Some(b_element) = self.b.peek() else {
-                return self.a.next();
-            };
-            match a_element.cmp(b_element) {
-                std::cmp::Ordering::Less => {
-                    return self.a.next();
-                }
-                std::cmp::Ordering::Equal => {
-                    self.a.next();
-                    return self.b.next();
-                }
-                std::cmp::Ordering::Greater => {
-                    return self.b.next();
-                }
+        let Some(a_element) = self.a.peek() else {
+            return self.b.next();
+        };
+        let Some(b_element) = self.b.peek() else {
+            return self.a.next();
+        };
+        match a_element.cmp(b_element) {
+            std::cmp::Ordering::Less => self.a.next(),
+            std::cmp::Ordering::Equal => {
+                self.a.next();
+                self.b.next()
             }
+            std::cmp::Ordering::Greater => self.b.next(),
+        }
+    }
+}
+
+struct SubsetOf<I: Iterator> {
+    iterator: Skip<I>,
+    period: usize,
+    first: bool,
+}
+
+impl<I: Iterator> SubsetOf<I> {
+    fn new(into_iterator: impl IntoIterator<IntoIter = I>, frame: usize, period: usize) -> Self {
+        let skip = frame % period;
+        let iterator = into_iterator.into_iter().skip(skip);
+
+        Self {
+            iterator,
+            period,
+            first: true,
+        }
+    }
+}
+
+impl<I: Iterator> Iterator for SubsetOf<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.first {
+            self.first = false;
+            self.iterator.next()
+        } else {
+            self.iterator.nth(self.period - 1)
         }
     }
 }
@@ -129,7 +152,6 @@ where
 pub struct WorldSync {
     pub particle_world_state: MaybeUninit<ParticleWorldState>,
     pub world_num: u8,
-    change_tracker: ChangeTracker,
     initialized: bool,
     tracked_chunks_prev: Vec<ChunkCoord>,
 }
@@ -142,7 +164,6 @@ impl Default for WorldSync {
         Self {
             particle_world_state: MaybeUninit::uninit(),
             world_num: 0,
-            change_tracker: ChangeTracker::new(),
             tracked_chunks_prev: Vec::new(),
             initialized: false,
         }
@@ -150,6 +171,10 @@ impl Default for WorldSync {
 }
 
 impl Module for WorldSync {
+    fn name(&self) -> &'static str {
+        "WorldSync"
+    }
+
     fn on_world_init(&mut self, _ctx: &mut ModuleCtx) -> eyre::Result<()> {
         self.particle_world_state = MaybeUninit::new(ParticleWorldState::new()?);
         self.initialized = true;
@@ -159,10 +184,6 @@ impl Module for WorldSync {
         if !self.initialized {
             return Ok(());
         }
-
-        let mut had_updates = self
-            .change_tracker
-            .update(Globals::default().game_global().m_grid_world);
 
         let Some(ent) = ctx.player_map.get_by_left(&my_peer_id()) else {
             return Ok(());
@@ -174,7 +195,6 @@ impl Module for WorldSync {
         let tracked_radius = 2;
         let tracked_square = tracked_radius * 2 + 1;
         let mut tracked_chunks = (0..tracked_square * tracked_square)
-            .into_iter()
             .filter_map(|i| {
                 let dx = i % tracked_square;
                 let dy = i / tracked_square;
@@ -183,37 +203,22 @@ impl Module for WorldSync {
 
                 // Check is any pixel scenes are still being loaded
                 // TODO: find a way that's better than O(number of tracked chunks * number of pixel scenes)
-                {
-                    let ix = cx * CHUNK_SIZE as i32;
-                    let iy = cy * CHUNK_SIZE as i32;
-                    let chunk_size = (CHUNK_SIZE) as i32;
-                    // Not sure how exactly this works but extra_margin helps prevent parts of HMs vanishing.
-                    let extra_margin = 4;
-                    for pixel_scene in ctx.globals.game_global.m_game_world.pixel_scenes.iter() {
-                        if pixel_scene.width * pixel_scene.height > 0
-                            && pixel_scene.x - extra_margin <= ix
-                            && ix <= pixel_scene.x + pixel_scene.width + chunk_size + extra_margin
-                            && pixel_scene.y - extra_margin <= iy
-                            && iy <= pixel_scene.y + pixel_scene.height + chunk_size + extra_margin
-                        {
-                            return None;
-                        }
-                    }
+                let chunk_coord = ChunkCoord(cx, cy);
+
+                if chunk_has_pending_pixel_scenes(&mut ctx.globals, chunk_coord) {
+                    return None;
                 }
 
-                Some(ChunkCoord(cx, cy))
+                Some(chunk_coord)
             })
             .collect::<Vec<_>>();
         // Needed for SortedSymmetricDifference
         tracked_chunks.sort_unstable();
-        had_updates.sort_unstable();
 
         // Get a list of all chunks that either changed their `tracked` state, or ones that have changes detected in them and are tracked.
         let should_update = SortedUnion::new(
             SortedSymmetricDifference::new(&tracked_chunks, &self.tracked_chunks_prev),
-            had_updates
-                .iter()
-                .filter(|chunk_pos| tracked_chunks.contains(chunk_pos)),
+            SubsetOf::new(&tracked_chunks, ctx.globals.game_global.frame_num, 5),
         )
         .copied()
         .collect::<Vec<_>>();
@@ -223,7 +228,7 @@ impl Module for WorldSync {
             .filter_map(|chunk_pos| {
                 let mut update = NoitaWorldUpdate {
                     coord: chunk_pos,
-                    pixels: std::array::from_fn(|_| Pixel::default()),
+                    pixel_runs: Vec::new(),
                 };
                 if unsafe {
                     self.particle_world_state
@@ -261,6 +266,25 @@ impl Module for WorldSync {
         Ok(())
     }
 }
+
+fn chunk_has_pending_pixel_scenes(globals_mut: &mut GlobalsMut, chunk_coord: ChunkCoord) -> bool {
+    let ix = chunk_coord.0 * CHUNK_SIZE as i32;
+    let iy = chunk_coord.1 * CHUNK_SIZE as i32;
+    let chunk_size = (CHUNK_SIZE) as i32;
+    let extra_margin = 4;
+    // Not sure how exactly this works but extra_margin helps prevent parts of HMs vanishing.
+    for pixel_scene in globals_mut.game_global.m_game_world.pixel_scenes.iter() {
+        if pixel_scene.width * pixel_scene.height > 0
+            && pixel_scene.x - extra_margin <= ix
+            && ix <= pixel_scene.x + pixel_scene.width + chunk_size + extra_margin
+            && pixel_scene.y - extra_margin <= iy
+            && iy <= pixel_scene.y + pixel_scene.height + chunk_size + extra_margin
+        {
+            return true;
+        }
+    }
+    false
+}
 impl WorldSync {
     pub fn handle_remote(&mut self, msg: ProxyToWorldSync) -> eyre::Result<()> {
         match msg {
@@ -287,7 +311,6 @@ impl WorldData for ParticleWorldState {
     unsafe fn encode_world(&self, chunk: &mut NoitaWorldUpdate) -> eyre::Result<()> {
         let ChunkCoord(cx, cy) = chunk.coord;
         let (cx, cy) = (cx as isize, cy as isize);
-        let chunk = &mut chunk.pixels;
         let Some(pixel_array) = unsafe { self.world_ptr.as_mut() }
             .wrap_err("no world")?
             .chunk_map
@@ -295,13 +318,15 @@ impl WorldData for ParticleWorldState {
         else {
             return Err(eyre!("chunk not loaded"));
         };
-        let mut chunk_iter = chunk.iter_mut();
+        let mut pixel_runner = PixelRunner::new();
         let (shift_x, shift_y) = self.get_shift::<CHUNK_SIZE>(cx, cy);
         for j in shift_y..shift_y + CHUNK_SIZE as isize {
             for i in shift_x..shift_x + CHUNK_SIZE as isize {
-                *chunk_iter.next().unwrap() = pixel_array.get_pixel(i, j);
+                let pixel = pixel_array.get_pixel(i, j);
+                pixel_runner.put_pixel(pixel);
             }
         }
+        chunk.pixel_runs = pixel_runner.build();
 
         Ok(())
     }
@@ -318,7 +343,7 @@ impl WorldData for ParticleWorldState {
         let (shift_x, shift_y) = self.get_shift::<CHUNK_SIZE>(cx, cy);
         let start_x = cx * CHUNK_SIZE as isize;
         let start_y = cy * CHUNK_SIZE as isize;
-        for (i, pixel) in chunk.pixels.into_iter().enumerate() {
+        for (i, pixel) in chunk.iter_pixels().enumerate() {
             let x = (i % CHUNK_SIZE) as isize;
             let y = (i / CHUNK_SIZE) as isize;
 
@@ -395,7 +420,7 @@ mod test {
         },
         world::ParticleWorldState,
     };
-    use shared::world_sync::{CHUNK_SIZE, ChunkCoord, NoitaWorldUpdate, Pixel};
+    use shared::world_sync::{ChunkCoord, NoitaWorldUpdate};
 
     use crate::modules::world_sync::{SortedSymmetricDifference, SortedUnion, WorldData};
 
@@ -514,15 +539,15 @@ mod test {
         }
         let mut upd = NoitaWorldUpdate {
             coord: ChunkCoord(5, 5),
-            pixels: [Pixel::default(); CHUNK_SIZE * CHUNK_SIZE],
+            pixel_runs: Vec::new(),
         };
         unsafe {
             assert!(pws.encode_world(&mut upd).is_ok());
         }
         assert_eq!(
-            upd.pixels[0..128]
+            upd.pixel_runs[0..128]
                 .iter()
-                .map(|a| a.mat())
+                .map(|a| a.data.mat())
                 .collect::<Vec<_>>(),
             vec![0; 128]
         );
@@ -533,9 +558,9 @@ mod test {
         }
         println!("{}", tmr.elapsed().as_nanos());
         assert_eq!(
-            upd.pixels[0..128]
+            upd.pixel_runs[0..128]
                 .iter()
-                .map(|a| a.mat())
+                .map(|a| a.data.mat())
                 .collect::<Vec<_>>(),
             list[0..128].iter().map(|a| *a as u16).collect::<Vec<_>>()
         );
@@ -550,9 +575,9 @@ mod test {
             assert!(pws.encode_world(&mut upd).is_ok());
         }
         assert_eq!(
-            upd.pixels[0..128]
+            upd.pixel_runs[0..128]
                 .iter()
-                .map(|a| a.mat())
+                .map(|a| a.data.mat())
                 .collect::<Vec<_>>(),
             list[0..128].iter().map(|a| *a as u16).collect::<Vec<_>>()
         );
