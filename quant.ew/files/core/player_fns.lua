@@ -479,6 +479,29 @@ function player_fns.nickname_of_peer(peer_id)
     return "???"
 end
 
+local function peer_spawn_offset(peer_id)
+    local n = tonumber(string.sub(tostring(peer_id), -6), 16) or 0
+    local dx = (n % 7 - 3) * 10
+    local dy = -(math.floor(n / 7) % 4) * 6
+    return dx, dy
+end
+
+local function strip_remote_only_components(entity)
+    for _, component_type in ipairs({
+        "AudioComponent",
+        "AudioLoopComponent",
+        "MaterialSuckerComponent",
+        "LiquidDisplacerComponent",
+        "ItemPickUpperComponent",
+        "PhysicsPickUpComponent",
+        "PlayerCollisionComponent",
+    }) do
+        for _, comp in ipairs(EntityGetComponentIncludingDisabled(entity, component_type) or {}) do
+            EntityRemoveComponent(entity, comp)
+        end
+    end
+end
+
 function player_fns.get_player_data_by_local_entity_id(entity)
     if entity == nil then
         return nil
@@ -495,7 +518,11 @@ function player_fns.spawn_player_for(peer_id, x, y, existing_playerdata)
         return
     end
     print("Spawning player for " .. peer_id)
+    local dx, dy = peer_spawn_offset(peer_id)
+    x = x + dx
+    y = y + dy
     local new = EntityLoad("mods/quant.ew/files/system/player/tmp/" .. peer_id .. "_base.xml", x, y)
+    strip_remote_only_components(new)
     util.make_ephemerial(new)
     LoadGameEffectEntityTo(new, "mods/quant.ew/files/system/spectate/no_tinker.xml")
     if ctx.proxy_opt.home_on_players then

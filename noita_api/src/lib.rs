@@ -1357,7 +1357,7 @@ impl EntityManager {
     pub fn set_cache(&mut self, cache: bool) {
         self.cache.clear();
         self.has_ran = false;
-        self.use_cache = !cache;
+        self.use_cache = cache;
     }
     pub fn init_frame_num(&mut self) -> eyre::Result<()> {
         let frame_num = raw::game_get_frame_num()?;
