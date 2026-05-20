@@ -589,9 +589,9 @@ impl NetManager {
                         audio.global_input_volume,
                     );
                     if audio.loopback {
-                        self.send(self.peer.my_id(), &data, Reliability::Reliable)
+                        self.send(self.peer.my_id(), &data, Reliability::Unreliable)
                     }
-                    self.broadcast(&data, Reliability::Reliable);
+                    self.broadcast(&data, Reliability::Unreliable);
                 }
             }
             let mut map = FxHashMap::default();
@@ -1289,11 +1289,11 @@ impl NetManager {
                 if let (Some(x), Some(y)) = (x, y) {
                     self.player_pos.0.store(x, Ordering::Relaxed);
                     self.player_pos.1.store(y, Ordering::Relaxed);
-                    self.broadcast(&NetMsg::PlayerPosition(x, y, b, d), Reliability::Reliable);
+                    self.broadcast(&NetMsg::PlayerPosition(x, y, b, d), Reliability::Unreliable);
                     self.send(
                         self.peer.my_id(),
                         &NetMsg::PlayerPosition(x, y, b, d),
-                        Reliability::Reliable,
+                        Reliability::Unreliable,
                     );
                 }
                 let x: Option<u8> = msg.next().and_then(|s| s.parse().ok());

@@ -69,13 +69,25 @@ local wait_on_requst = {}
 
 local has_twwe_locally
 
-function rpc.player_update(input_data, pos_data, phys_info, current_slot, team)
-    local peer_id = ctx.rpc_peer_id
+local last_player_update_seq = {}
 
-    if not player_fns.peer_has_player(peer_id) then
+function rpc.player_update(input_data, pos_data, phys_info, current_slot, team, update_seq)
+    local peer_id = ctx.rpc_peer_id
+    if update_seq ~= nil then
+        local last_seq = last_player_update_seq[peer_id]
+        if last_seq ~= nil and update_seq <= last_seq then
+            return
+        end
+        last_player_update_seq[peer_id] = update_seq
+    end
+
+    if not player_fns.peer_has_player(peer_id) and pos_data ~= nil then
         player_fns.spawn_player_for(peer_id, pos_data.x, pos_data.y, team)
     end
     local player_data = player_fns.peer_get_player_data(peer_id)
+    if player_data == nil then
+        return
+    end
     if player_data.dc then
         player_data.dc = false
         undc(player_data.entity)
@@ -194,7 +206,7 @@ function module.on_world_update()
             my_team = tonumber(ModSettingGet("quant.ew.team")) or 0
         end
 
-        rpc.player_update(input_data, pos_data, phys_info, current_slot, my_team)
+        rpc.player_update(input_data, pos_data, phys_info, current_slot, my_team, GameGetFrameNum())
         if GameGetFrameNum() % 300 == 53 then
             local n = np.GetGameModeNr()
             rpc.check_gamemode(
