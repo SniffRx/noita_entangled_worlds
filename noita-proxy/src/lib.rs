@@ -228,6 +228,9 @@ impl GameSettings {
                                     let mut temp = game_settings
                                         .health_lost_on_revive
                                         .unwrap_or(def.health_lost_on_revive);
+                                    if temp == 0 {
+                                        temp = def.health_lost_on_revive;
+                                    }
                                     if ui.add(Slider::new(&mut temp, 0..=100)).changed() {
                                         game_settings.health_lost_on_revive = Some(temp)
                                     }
@@ -264,6 +267,9 @@ impl GameSettings {
                                     let mut temp = game_settings
                                         .health_lost_on_revive
                                         .unwrap_or(def.health_lost_on_revive);
+                                    if temp == 0 {
+                                        temp = def.health_lost_on_revive;
+                                    }
                                     if ui.add(Slider::new(&mut temp, 0..=100)).changed() {
                                         game_settings.health_lost_on_revive = Some(temp)
                                     }

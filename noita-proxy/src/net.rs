@@ -1002,11 +1002,16 @@ impl NetManager {
                             .no_material_damage
                             .unwrap_or(def.no_material_damage),
                     );
+                    let health_on_revive = settings
+                        .health_lost_on_revive
+                        .unwrap_or(def.health_lost_on_revive);
                     state.try_ws_write_option(
                         "health_lost_on_revive",
-                        settings
-                            .health_lost_on_revive
-                            .unwrap_or(def.health_lost_on_revive),
+                        if health_on_revive == 0 {
+                            def.health_lost_on_revive
+                        } else {
+                            health_on_revive
+                        },
                     );
                 }
                 LocalHealthMode::PermaDeath => state.try_ws_write_option("perma_death", true),

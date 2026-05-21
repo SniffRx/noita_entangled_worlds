@@ -121,11 +121,15 @@ fn entity_is_excluded(entity: EntityID) -> eyre::Result<bool> {
     let good = "data/entities/items/wands/wand_good/wand_good_";
     let filename = entity.filename()?;
     let tags = format!(",{},", entity.tags()?);
+    let is_shop_item = entity
+        .try_get_first_component::<ItemCostComponent>(None)?
+        .is_some_and(|cost| cost.cost().unwrap_or(0) > 0);
     Ok(tags.contains(",ew_no_enemy_sync,")
         || tags.contains(",polymorphed_player,")
         || tags.contains(",gold_nugget,")
         || tags.contains(",nightmare_starting_wand,")
         || ENTITY_EXCLUDES.contains(filename.as_ref())
+        || is_shop_item
         || filename.starts_with("data/entities/items/pickup/potion")
         || filename.starts_with("data/entities/items/pickup/powder_stash")
         || filename.starts_with(good)

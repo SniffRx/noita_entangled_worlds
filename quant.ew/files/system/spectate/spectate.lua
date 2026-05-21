@@ -336,7 +336,7 @@ local function draw_spectated_bar_owner(gui_started)
     local w = GuiGetScreenDimensions(gui)
     local text = player_fns.nickname_of_peer(camera_player_id)
     local tw = GuiGetTextDimensions(gui, text)
-    draw_text_with_shadow(math.max(2, w - 86 - tw), 112, text)
+    draw_text_with_shadow(math.max(2, w - 111 - tw), 47, text)
     return gui_started
 end
 

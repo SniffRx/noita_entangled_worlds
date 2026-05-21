@@ -2055,9 +2055,7 @@ impl RemoteDiffModel {
                         match self.inner(ctx, entity_info, *entity, lid, entity_manager) {
                             Ok(Some(lid)) => to_remove.push(lid),
                             Err(s) => {
-                                if is_stale_component_error(&s) {
-                                    stale_entities.push(*lid);
-                                }
+                                stale_entities.push(*lid);
                                 print_error(s)?;
                             }
                             _ => {}
@@ -2593,13 +2591,6 @@ fn safe_entitykill(entity: &mut EntityManager) {
         entity.entity().kill();
     }
     entity.remove_current();
-}
-
-fn is_stale_component_error(err: &eyre::Report) -> bool {
-    let err = format!("{err:?}");
-    err.contains("couldn't find component")
-        || err.contains("ComponentGetValue2")
-        || err.contains("ComponentSetValue2")
 }
 
 fn give_wand(

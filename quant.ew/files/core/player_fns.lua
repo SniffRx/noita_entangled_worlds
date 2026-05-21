@@ -431,6 +431,9 @@ function player_fns.deserialize_position(message, phys_infos, player_data)
     local character_data = EntityGetFirstComponentIncludingDisabled(entity, "CharacterDataComponent")
     local velocity_comp = EntityGetFirstComponentIncludingDisabled(entity, "VelocityComponent")
     local platforming_comp = EntityGetFirstComponentIncludingDisabled(entity, "CharacterPlatformingComponent")
+    if character_data == nil or velocity_comp == nil or platforming_comp == nil then
+        return
+    end
 
     ComponentSetValue2(platforming_comp, "run_velocity", 0)
     ComponentSetValue2(platforming_comp, "fly_velocity_x", 0)
@@ -443,6 +446,10 @@ function player_fns.deserialize_position(message, phys_infos, player_data)
     ComponentSetValue2(platforming_comp, "mIsPrecisionJumping", false)
 
     ComponentSetValue2(velocity_comp, "gravity_y", 0)
+    ComponentSetValue2(platforming_comp, "run_velocity", math.abs(message.vel_x or 0))
+    ComponentSetValue2(platforming_comp, "mFramesInAirCounter", message.frames_in_air or 0)
+    ComponentSetValue2(character_data, "is_on_ground", message.is_on_ground)
+    ComponentSetValue2(character_data, "is_on_slippery_ground", message.is_on_slippery_ground)
 
     if not util.set_phys_info(entity, phys_infos, player_data.fps) then
         local m = player_data.fps / ctx.my_player.fps
