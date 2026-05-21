@@ -1,4 +1,5 @@
 target
+target-timing-*
 worldlog.bin
 flamegraph.svg
 perf.data
