@@ -126,6 +126,8 @@ fn entity_is_excluded(entity: EntityID) -> eyre::Result<bool> {
         || tags.contains(",gold_nugget,")
         || tags.contains(",nightmare_starting_wand,")
         || ENTITY_EXCLUDES.contains(filename.as_ref())
+        || filename.starts_with("data/entities/items/pickup/potion")
+        || filename.starts_with("data/entities/items/pickup/powder_stash")
         || filename.starts_with(good)
         || tags.contains(",player_unit,")
         || filename == "data/entities/items/pickup/greed_curse.xml"

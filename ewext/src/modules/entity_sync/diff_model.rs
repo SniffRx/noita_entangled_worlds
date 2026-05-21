@@ -1537,6 +1537,18 @@ impl RemoteDiffModel {
     ) -> Vec<EntityID> {
         let mut dont_kill = Vec::with_capacity(self.waiting_for_lid.len());
         for info in diff {
+            if let Some((&old_lid, _)) = self
+                .lid_to_gid
+                .iter()
+                .find(|(lid, gid)| **gid == info.gid && **lid != info.lid)
+            {
+                self.entity_infos.remove(&old_lid);
+                if let Some((_, old_entity)) = self.tracked.remove_by_left(&old_lid) {
+                    let _ = entity_manager.set_current_entity(old_entity);
+                    safe_entitykill(entity_manager);
+                }
+                self.lid_to_gid.remove(&old_lid);
+            }
             if let Some(ent) = self.waiting_for_lid.remove(&info.gid) {
                 self.tracked.insert(info.lid, ent);
                 let _ =
@@ -1989,6 +2001,7 @@ impl RemoteDiffModel {
         entity_manager: &mut EntityManager,
     ) -> eyre::Result<usize> {
         let mut to_remove = Vec::new();
+        let mut stale_entities = Vec::new();
         let l = self.entity_infos.len();
         let mut end = None;
         let start = if start >= l { 0 } else { start };
@@ -2041,7 +2054,12 @@ impl RemoteDiffModel {
                     } else {
                         match self.inner(ctx, entity_info, *entity, lid, entity_manager) {
                             Ok(Some(lid)) => to_remove.push(lid),
-                            Err(s) => print_error(s)?,
+                            Err(s) => {
+                                if is_stale_component_error(&s) {
+                                    stale_entities.push(*lid);
+                                }
+                                print_error(s)?;
+                            }
                             _ => {}
                         }
                     }
@@ -2057,6 +2075,10 @@ impl RemoteDiffModel {
                                 && ctx.dont_spawn.contains(gid)
                             {
                                 continue;
+                            }
+                            if let Some((_, stale_entity)) = self.tracked.remove_by_left(lid) {
+                                let _ = entity_manager.set_current_entity(stale_entity);
+                                safe_entitykill(entity_manager);
                             }
                             let entity = spawn_entity_by_data(
                                 &entity_info.spawn_info,
@@ -2076,6 +2098,14 @@ impl RemoteDiffModel {
                     }
                 }
             }
+        }
+        for lid in stale_entities {
+            self.entity_infos.remove(&lid);
+            if let Some((_, entity)) = self.tracked.remove_by_left(&lid) {
+                let _ = entity_manager.set_current_entity(entity);
+                safe_entitykill(entity_manager);
+            }
+            self.lid_to_gid.remove(&lid);
         }
         for lid in to_remove {
             self.grab_request.push(lid);
@@ -2563,6 +2593,13 @@ fn safe_entitykill(entity: &mut EntityManager) {
         entity.entity().kill();
     }
     entity.remove_current();
+}
+
+fn is_stale_component_error(err: &eyre::Report) -> bool {
+    let err = format!("{err:?}");
+    err.contains("couldn't find component")
+        || err.contains("ComponentGetValue2")
+        || err.contains("ComponentSetValue2")
 }
 
 fn give_wand(

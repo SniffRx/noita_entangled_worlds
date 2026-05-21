@@ -592,7 +592,7 @@ impl Default for DefaultSettings {
             friendly_fire: false,
             max_players: 250,
             health_per_player: 100,
-            health_lost_on_revive: 0,
+            health_lost_on_revive: 100,
             no_material_damage: false,
             global_hp_loss: false,
             perk_ban_list: String::new(),

@@ -247,13 +247,16 @@ local function allow_notplayer_perk(perk_id)
 end
 
 local function reduce_hp()
-    local p = 100 - ctx.proxy_opt.health_lost_on_revive
-    if p ~= 100 then
+    local p = ctx.proxy_opt.health_lost_on_revive
+    if p <= 0 then
+        p = 100
+    end
+    if p < 100 then
         if ctx.proxy_opt.global_hp_loss then
             rpc.loss_hp()
         end
-        local hp, max_hp = util.get_ent_health(ctx.my_player.entity)
-        util.set_ent_health(ctx.my_player.entity, { (hp * p) / 100, (max_hp * p) / 100 })
+        local _, max_hp = util.get_ent_health(ctx.my_player.entity)
+        util.set_ent_health(ctx.my_player.entity, { (max_hp * p) / 100, max_hp })
     end
 end
 
@@ -682,9 +685,12 @@ end
 
 rpc.opts_reliable()
 function rpc.loss_hp()
-    local p = 100 - ctx.proxy_opt.health_lost_on_revive
-    local hp, max_hp = util.get_ent_health(ctx.my_player.entity)
-    util.set_ent_health(ctx.my_player.entity, { (hp * p) / 100, (max_hp * p) / 100 })
+    local p = ctx.proxy_opt.health_lost_on_revive
+    if p <= 0 then
+        p = 100
+    end
+    local _, max_hp = util.get_ent_health(ctx.my_player.entity)
+    util.set_ent_health(ctx.my_player.entity, { (max_hp * p) / 100, max_hp })
 end
 
 rpc.opts_everywhere()

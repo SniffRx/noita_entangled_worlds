@@ -611,7 +611,7 @@ impl NetManager {
                 }
                 if !self.no_chunkmap_to_players.load(Ordering::Relaxed) && !map.is_empty() {
                     let data = NetMsg::MapData(map);
-                    self.broadcast(&data, Reliability::Reliable)
+                    self.broadcast(&data, Reliability::Unreliable)
                 }
             }
             // Don't do excessive busy-waiting;

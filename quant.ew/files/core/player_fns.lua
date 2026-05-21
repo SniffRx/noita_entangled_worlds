@@ -447,7 +447,18 @@ function player_fns.deserialize_position(message, phys_infos, player_data)
     if not util.set_phys_info(entity, phys_infos, player_data.fps) then
         local m = player_data.fps / ctx.my_player.fps
         ComponentSetValue2(character_data, "mVelocity", message.vel_x * m, message.vel_y * m)
-        EntityApplyTransform(entity, message.x, message.y)
+        local current_x, current_y = EntityGetTransform(entity)
+        if current_x == nil or current_y == nil then
+            EntityApplyTransform(entity, message.x, message.y)
+            return
+        end
+        local dx = message.x - current_x
+        local dy = message.y - current_y
+        if dx * dx + dy * dy > 128 * 128 then
+            EntityApplyTransform(entity, message.x, message.y)
+        else
+            EntityApplyTransform(entity, current_x + dx * 0.45, current_y + dy * 0.45)
+        end
     end
 end
 
