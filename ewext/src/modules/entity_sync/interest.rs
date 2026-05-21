@@ -12,7 +12,9 @@ pub(crate) struct InterestTracker {
 
 impl InterestTracker {
     pub(crate) fn new(radius_hysteresis: f64) -> Self {
-        assert!(radius_hysteresis > 0.0);
+        unsafe {
+            std::hint::assert_unchecked(radius_hysteresis > 0.0);
+        }
         Self {
             radius_hysteresis,
             x: 0.0,
@@ -49,7 +51,7 @@ impl InterestTracker {
         std::mem::take(&mut self.added_any)
     }
 
-    pub(crate) fn drain_lost_interest(&mut self) -> impl Iterator<Item = PeerId> + '_ {
+    pub(crate) fn drain_lost_interest(&mut self) -> impl DoubleEndedIterator<Item = PeerId> + '_ {
         self.lost_interest.drain(..)
     }
 

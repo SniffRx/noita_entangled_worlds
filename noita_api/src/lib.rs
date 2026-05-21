@@ -16,6 +16,9 @@ use std::{
 pub mod lua;
 pub mod serialize;
 pub use noita_api_macro::add_lua_fn;
+pub mod addr_grabber;
+pub mod heap;
+pub mod noita;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntityID(pub NonZero<isize>);
@@ -341,7 +344,7 @@ impl EntityID {
         isize::from(self.0)
     }
 
-    pub fn children(self, tag: Option<Cow<'_, str>>) -> impl Iterator<Item = EntityID> {
+    pub fn children(self, tag: Option<Cow<'_, str>>) -> impl DoubleEndedIterator<Item = EntityID> {
         raw::entity_get_all_children(self, tag)
             .unwrap_or(None)
             .unwrap_or_default()
@@ -1565,7 +1568,7 @@ impl EntityManager {
     pub fn iter_all_components_of_type<C: Component>(
         &self,
         tag: ComponentTag,
-    ) -> impl Iterator<Item = C> {
+    ) -> impl DoubleEndedIterator<Item = C> {
         if self.use_cache {
             return self
                 .entity()
@@ -1587,7 +1590,7 @@ impl EntityManager {
     }
     fn iter_mut_all_components_of_type<C: Component>(
         &mut self,
-    ) -> impl Iterator<Item = &mut ComponentData> {
+    ) -> impl DoubleEndedIterator<Item = &mut ComponentData> {
         self.current_data.components[const { CachedComponent::from_component::<C>() as usize }]
             .iter_mut()
             .filter(|c| c.enabled)
@@ -1595,7 +1598,7 @@ impl EntityManager {
     pub fn iter_all_components_of_type_including_disabled<C: Component>(
         &self,
         tag: ComponentTag,
-    ) -> impl Iterator<Item = C> {
+    ) -> impl DoubleEndedIterator<Item = C> {
         if self.use_cache {
             return self
                 .entity()
@@ -1619,7 +1622,7 @@ impl EntityManager {
     }
     fn iter_all_components_of_type_including_disabled_raw<C: Component>(
         &self,
-    ) -> impl Iterator<Item = &ComponentData> {
+    ) -> impl DoubleEndedIterator<Item = &ComponentData> {
         self.current_data.components[const { CachedComponent::from_component::<C>() as usize }]
             .iter()
     }

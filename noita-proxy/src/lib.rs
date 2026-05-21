@@ -11,8 +11,8 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use eframe::egui::load::TexturePoll;
 use eframe::egui::{
     self, Align2, Button, Color32, ComboBox, Context, DragValue, FontDefinitions, FontFamily,
-    ImageButton, InnerResponse, Key, Layout, Margin, OpenUrl, Rect, RichText, ScrollArea, Sense,
-    SizeHint, Slider, TextureOptions, ThemePreference, Ui, UiBuilder, Vec2, Visuals, Window, pos2,
+    InnerResponse, Key, Layout, Margin, OpenUrl, Rect, RichText, ScrollArea, Sense, SizeHint,
+    Slider, TextureOptions, ThemePreference, Ui, UiBuilder, Vec2, Visuals, Window, pos2,
 };
 use eframe::epaint::TextureHandle;
 use image::DynamicImage::ImageRgba8;
@@ -55,13 +55,13 @@ use util::{args::Args, steam_helper::LobbyExtraData};
 mod bookkeeping;
 use crate::net::messages::NetMsg;
 use crate::net::omni::OmniPeerId;
-use crate::net::world::world_model::ChunkCoord;
 use crate::player_cosmetics::{
     display_player_skin, get_player_skin, player_path, player_select_current_color_slot,
     player_skin_display_color_picker, shift_hue,
 };
 pub use bookkeeping::{mod_manager, releases, self_update};
 use shared::WorldPos;
+use shared::world_sync::ChunkCoord;
 mod lobby_code;
 pub mod net;
 mod player_cosmetics;
@@ -126,7 +126,7 @@ pub enum LocalHealthMode {
 #[serde(default)]
 pub struct GameSettings {
     seed: u64,
-    world_num: u16,
+    world_num: u8,
     debug_mode: Option<bool>,
     use_constant_seed: bool,
     duplicate: Option<bool>,
@@ -1128,7 +1128,15 @@ impl ImageMap {
         }
         if self.notplayer.is_none() {
             self.notplayer = egui::include_image!("../assets/notplayer.png")
-                .load(ctx, TextureOptions::NEAREST, SizeHint::Size(7, 17))
+                .load(
+                    ctx,
+                    TextureOptions::NEAREST,
+                    SizeHint::Size {
+                        width: 7,
+                        height: 17,
+                        maintain_aspect_ratio: true,
+                    },
+                )
                 .ok();
         }
         {
@@ -1355,7 +1363,7 @@ fn square_button_icon(ui: &mut Ui, icon: egui::Image) -> egui::Response {
     let side = ui.available_width();
     ui.add_sized(
         [side, side],
-        ImageButton::new(icon), // Somewhy it doesnt inherit style correctly
+        Button::image(icon), // Somewhy it doesnt inherit style correctly
     )
 }
 
@@ -1547,6 +1555,7 @@ impl App {
             noita_launcher: NoitaLauncher::new(
                 &self.modmanager_settings.game_exe_path,
                 self.args.launch_cmd.as_deref(),
+                self.args.run_noita_with_gdb,
                 self.steam_state.as_mut().ok(),
             ),
         };
@@ -1658,10 +1667,10 @@ impl App {
 
     fn connect_screen(&mut self, ctx: &Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            if self.app_saved_state.times_started % 20 == 0 {
+            if self.app_saved_state.times_started.is_multiple_of(20) {
                 let image = egui::Image::new(egui::include_image!("../assets/longleg.png"))
                     .texture_options(TextureOptions::NEAREST);
-                image.paint_at(ui, ctx.screen_rect());
+                image.paint_at(ui, ctx.viewport_rect());
             } else {
                 draw_bg(ui);
             }
@@ -1677,7 +1686,7 @@ impl App {
             let (steam_connect_rect, other_rect) = right.split_top_bottom_at_fraction(0.33);
             let (ip_connect_rect, info_rect) = other_rect.split_top_bottom_at_fraction(0.5);
 
-            ui.allocate_new_ui(
+            ui.scope_builder(
                 UiBuilder {
                     max_rect: Some(bottom_panel.shrink(group_shrink)),
                     ..Default::default()
@@ -1694,7 +1703,7 @@ impl App {
                 },
             );
 
-            ui.allocate_new_ui(
+            ui.scope_builder(
                 UiBuilder {
                     max_rect: Some(info_rect.shrink(group_shrink)),
                     ..Default::default()
@@ -1708,7 +1717,7 @@ impl App {
                 },
             );
 
-            ui.allocate_new_ui(
+            ui.scope_builder(
                 UiBuilder {
                     max_rect: Some(right_b_panel.shrink(group_shrink)),
                     ..Default::default()
@@ -1722,7 +1731,7 @@ impl App {
                 },
             );
 
-            ui.allocate_new_ui(
+            ui.scope_builder(
                 UiBuilder {
                     max_rect: Some(settings_rect.shrink(group_shrink)),
                     ..Default::default()
@@ -1751,7 +1760,7 @@ impl App {
                     });
                 },
             );
-            ui.allocate_new_ui(
+            ui.scope_builder(
                 UiBuilder {
                     max_rect: Some(steam_connect_rect.shrink(group_shrink)),
                     ..Default::default()
@@ -1764,7 +1773,7 @@ impl App {
                     });
                 },
             );
-            ui.allocate_new_ui(
+            ui.scope_builder(
                 UiBuilder {
                     max_rect: Some(ip_connect_rect.shrink(group_shrink)),
                     ..Default::default()
@@ -2478,7 +2487,7 @@ fn draw_bg(ui: &mut Ui) {
     let image = egui::Image::new(egui::include_image!("../assets/noita_ew_logo_sq.webp"))
         .texture_options(TextureOptions::NEAREST);
 
-    let rect = ui.ctx().screen_rect();
+    let rect = ui.ctx().viewport_rect();
     let aspect_ratio = 1.0;
     let new_height = f32::max(rect.width() * aspect_ratio, rect.height());
     let new_width = new_height / aspect_ratio;

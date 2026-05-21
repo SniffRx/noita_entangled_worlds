@@ -41,6 +41,8 @@ else
     ModMagicNumbersFileAdd("mods/quant.ew/files/magic.xml")
 end
 
+util.add_cross_call("ewext_breakpoint", ewext.lua_breakpoint)
+
 util.add_cross_call("ew_per_peer_seed", function()
     return tonumber(string.sub(ctx.my_id, 8, 12), 16), tonumber(string.sub(ctx.my_id, 12), 16)
 end)
@@ -91,7 +93,7 @@ local function load_modules()
     ctx.dofile_and_add_hooks("mods/quant.ew/files/system/weather_sync.lua")
     ctx.load_system("polymorph")
 
-    ctx.load_system("world_sync")
+    -- ctx.load_system("world_sync")
 
     -- ctx.load_system("spawn_hooks")
     ctx.dofile_and_add_hooks("mods/quant.ew/files/system/proxy_info.lua")
@@ -154,6 +156,7 @@ local function load_modules()
     if ctx.proxy_opt.pvp then
         ctx.load_system("pvp")
     end
+    -- print("world_info", np.GetWorldInfo().chunk_loaded)
 end
 
 local function load_extra_modules()

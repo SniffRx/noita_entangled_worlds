@@ -13,6 +13,10 @@ build:
     cd noita-proxy && cargo build
     cd noita-proxy && cargo build --release
 
+build_noita_api_example:
+    cd noita_api_example && cargo build --release --target=i686-pc-windows-gnu
+    cp noita_api_example/target/i686-pc-windows-gnu/release/noita_api_example.dll noita_api_example/material_converter/material_converter.dll
+
 ## ewext stuff
 build_luajit:
     mkdir target/ -p
@@ -30,9 +34,22 @@ build_ext_debug:
     cd ewext && cargo build --target=i686-pc-windows-gnu
     cp ewext/target/i686-pc-windows-gnu/debug/ewext.dll quant.ew/ewext.dll
 
+build_injector:
+    cd extra/dll_injector && cargo build --release --target=i686-pc-windows-gnu
+    if [ ! -e "$HOME/.local/share/Steam/steamapps/common/Noita/noita_back.exe" ]; then cp $HOME/.local/share/Steam/steamapps/common/Noita/noita.exe $HOME/.local/share/Steam/steamapps/common/Noita/noita_back.exe;fi
+    cp extra/dll_injector/target/i686-pc-windows-gnu/release/dll_injector.exe $HOME/.local/share/Steam/steamapps/common/Noita/noita.exe
+
+build_malloc:
+    cd extra/malloc_probe && cargo build --release --target=i686-pc-windows-gnu
+    cp extra/malloc_probe/target/i686-pc-windows-gnu/release/malloc_probe.dll $HOME/.local/share/Steam/steamapps/common/Noita
+
+build_malloc_debug:
+    cd extra/malloc_probe && cargo build --target=i686-pc-windows-gnu
+    cp extra/malloc_probe/target/i686-pc-windows-gnu/debug/malloc_probe.dll $HOME/.local/share/Steam/steamapps/common/Noita
+
 ##
 build_blob:
-    cd blob_guy && CARGO_TARGET_I686_PC_WINDOWS_GNU_RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" cargo +nightly build --release --target=i686-pc-windows-gnu -Zbuild-std="panic_abort,std"
+    cd blob_guy && cargo build --release --target=i686-pc-windows-gnu
     cp blob_guy/target/i686-pc-windows-gnu/release/blob_guy.dll blob_guy/blob_guy/blob_guy.dll
 build_blob_debug:
     cd blob_guy && cargo build --target=i686-pc-windows-gnu
@@ -46,6 +63,9 @@ flamegraph: add_dylib_debug
 
 run: add_dylib_debug build_ext
     cd noita-proxy && NP_SKIP_MOD_CHECK=1 cargo run
+
+run-w-gdb: add_dylib_debug build_ext
+    cd noita-proxy && NP_SKIP_MOD_CHECK=1 cargo run -- --run-noita-with-gdb --launch-cmd "wine noita.exe"
 
 run2: add_dylib_debug build_ext
     cd noita-proxy && NP_SKIP_MOD_CHECK=1 cargo run -- --launch-cmd "wine noita.exe -gamemode 0"

@@ -4,21 +4,15 @@ use rand::{Rng, rng};
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use rustc_hash::{FxHashMap, FxHashSet};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
-use std::{cmp, env, mem, thread};
+use std::{cmp, mem, thread};
 use tracing::{debug, info, warn};
 use wide::f32x8;
-use world_model::{
-    CHUNK_SIZE, ChunkCoord, ChunkData, ChunkDelta, WorldModel,
-    chunk::{Chunk, Pixel},
-};
-
-pub use world_model::encoding::NoitaWorldUpdate;
+use world_model::{ChunkData, ChunkDelta, WorldModel, chunk::Chunk};
 
 use crate::bookkeeping::save_state::{SaveState, SaveStateEntry};
 
@@ -29,12 +23,6 @@ use super::{
 };
 
 pub mod world_model;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum WorldUpdateKind {
-    Update(NoitaWorldUpdate),
-    End,
-}
 
 #[derive(Debug, Decode, Encode, Clone)]
 pub(crate) enum WorldNetMessage {
@@ -75,13 +63,13 @@ pub(crate) enum WorldNetMessage {
     RelinquishAuthority {
         chunk: ChunkCoord,
         chunk_data: Option<ChunkData>,
-        world_num: i32,
+        world_num: u8,
     },
-    // Ttell how to update a chunk storage
+    // Tell how to update a chunk storage
     UpdateStorage {
         chunk: ChunkCoord,
-        chunk_data: Option<ChunkData>,
-        world_num: i32,
+        chunk_data: ChunkData,
+        world_num: u8,
         priority: Option<u8>,
     },
     // When listening
@@ -200,7 +188,7 @@ pub(crate) struct WorldManager {
     chunk_last_update: FxHashMap<ChunkCoord, u64>,
     /// Stores last priority we used for that chunk, in case transfer fails and we'll need to request authority normally.
     last_request_priority: FxHashMap<ChunkCoord, u8>,
-    world_num: i32,
+    world_num: u8,
     pub materials: FxHashMap<u16, (u32, u32, CellType, u32)>,
     is_storage_recent: FxHashSet<ChunkCoord>,
     explosion_pointer: FxHashMap<ChunkCoord, Vec<usize>>,
@@ -233,6 +221,7 @@ impl WorldManager {
         let (sendm, rxm) = mpsc::channel::<FxHashMap<u16, u32>>();
         let (tx, recv) = mpsc::channel::<(ChunkCoord, ChunkData)>();
         let (tsx, recv2) = mpsc::channel::<(ChunkCoord, ChunkData)>();
+        debug!("My peer id: {my_peer_id:?}");
         thread::spawn(move || {
             let mut mats = Default::default();
             let mut chunks = Vec::new();
@@ -330,66 +319,22 @@ impl WorldManager {
         self.chunk_storage.clone()
     }
 
-    pub(crate) fn add_update(&mut self, update: NoitaWorldUpdate) {
-        self.outbound_model
-            .apply_noita_update(&update, &mut self.is_storage_recent);
-    }
-
-    pub(crate) fn add_end(&mut self, priority: u8, pos: &[i32]) {
-        let updated_chunks = self
-            .outbound_model
-            .updated_chunks()
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
-        self.current_update += 1;
-        let chunks_to_send: Vec<Vec<(OmniPeerId, u8)>> = updated_chunks
-            .iter()
-            .map(|chunk| self.chunk_updated_locally(*chunk, priority, pos))
-            .collect();
-        let mut chunk_packet: HashMap<OmniPeerId, Vec<(ChunkDelta, u8)>> = HashMap::new();
-        for (chunk, who_sending) in updated_chunks.iter().zip(chunks_to_send.iter()) {
-            let Some(delta) = self.outbound_model.get_chunk_delta(*chunk, false) else {
-                continue;
-            };
-            for (peer, pri) in who_sending {
-                chunk_packet
-                    .entry(*peer)
-                    .or_default()
-                    .push((delta.clone(), *pri));
-            }
-        }
-        let mut emit_queue = Vec::new();
-        for (peer, chunkpacket) in chunk_packet {
-            emit_queue.push((
-                Destination::Peer(peer),
-                WorldNetMessage::ChunkPacket { chunkpacket },
-            ));
-        }
-        for (dst, msg) in emit_queue {
-            self.emit_msg(dst, msg)
-        }
-        self.outbound_model.reset_change_tracking();
-    }
-
-    fn chunk_updated_locally(
-        &mut self,
-        chunk: ChunkCoord,
-        priority: u8,
-        pos: &[i32],
-    ) -> Vec<(OmniPeerId, u8)> {
-        if pos.len() == 6 {
-            self.my_pos = (pos[0], pos[1]);
-            self.cam_pos = (pos[2], pos[3]);
-            self.is_notplayer = pos[4] == 1;
-            if self.world_num != pos[5] {
-                self.world_num = pos[5];
+    fn update_world_info(&mut self, pos: Option<(i32, i32, i32, i32, bool)>, world_num: u8) {
+        if let Some((px, py, cx, cy, is_not)) = pos {
+            self.my_pos = (px, py);
+            self.cam_pos = (cx, cy);
+            self.is_notplayer = is_not;
+            if self.world_num != world_num {
+                self.world_num = world_num;
                 self.reset();
             }
-        } else if self.world_num != pos[0] {
-            self.world_num = pos[0];
+        } else if self.world_num != world_num {
+            self.world_num = world_num;
             self.reset();
         }
+    }
+
+    fn chunk_updated_locally(&mut self, chunk: ChunkCoord, priority: u8) -> Vec<(OmniPeerId, u8)> {
         let entry = self.chunk_state.entry(chunk).or_insert_with(|| {
             debug!("Created entry for {chunk:?}");
             ChunkState::RequestAuthority {
@@ -453,9 +398,6 @@ impl WorldManager {
                 new_authority,
                 stop_sending,
             } => {
-                let Some(delta) = self.outbound_model.get_chunk_delta(chunk, false) else {
-                    return Vec::new();
-                };
                 if *pri != priority {
                     *pri = priority;
                     emit_queue.push((
@@ -482,6 +424,11 @@ impl WorldManager {
                             new_auth_got = true
                         }
                         if take_auth {
+                            let Some(delta) = self.outbound_model.get_chunk_delta(chunk, false)
+                            else {
+                                return Vec::new();
+                            };
+                            emit_queue.retain(|(a, _)| matches!(a, Destination::Host));
                             emit_queue.push((
                                 Destination::Peer(listener),
                                 WorldNetMessage::ListenUpdate {
@@ -490,7 +437,8 @@ impl WorldManager {
                                     take_auth,
                                 },
                             ));
-                            chunks_to_send = Vec::new()
+                            chunks_to_send = Vec::new();
+                            break;
                         } else {
                             chunks_to_send.push((listener, priority));
                         }
@@ -508,7 +456,7 @@ impl WorldManager {
         chunks_to_send
     }
 
-    pub(crate) fn update(&mut self) {
+    pub(crate) fn update(&mut self) -> Vec<NoitaWorldUpdate> {
         fn should_kill(
             my_pos: (i32, i32),
             cam_pos: (i32, i32),
@@ -518,14 +466,18 @@ impl WorldManager {
         ) -> bool {
             let (x, y) = my_pos;
             let (cx, cy) = cam_pos;
-            if (x - cx).abs() > 2 || (y - cy).abs() > 2 {
+            let result = if (x - cx).abs() > 2 || (y - cy).abs() > 2 {
                 !(chx <= x + 2 && chx >= x - 2 && chy <= y + 2 && chy >= y - 2
                     || chx <= cx + 2 && chx >= cx - 2 && chy <= cy + 2 && chy >= cy - 2)
             } else if is_notplayer {
                 !(chx <= x + 2 && chx >= x - 2 && chy <= y + 2 && chy >= y - 2)
             } else {
                 !(chx <= x + 3 && chx >= x - 3 && chy <= y + 3 && chy >= y - 3)
+            };
+            if result {
+                debug!("[should kill] {my_pos:?} {cam_pos:?} {chx} {chy} {is_notplayer} {result}");
             }
+            result
         }
         let mut emit_queue = Vec::new();
         for (&chunk, state) in self.chunk_state.iter_mut() {
@@ -550,17 +502,7 @@ impl WorldManager {
                     debug!("Requested authority for {chunk:?}")
                 }
                 // This state doesn't have much to do.
-                ChunkState::WaitingForAuthority => {
-                    if should_kill(
-                        self.my_pos,
-                        self.cam_pos,
-                        chunk.0,
-                        chunk.1,
-                        self.is_notplayer,
-                    ) {
-                        *state = ChunkState::UnloadPending;
-                    }
-                }
+                ChunkState::WaitingForAuthority => {}
                 ChunkState::Listening { authority, .. } => {
                     if should_kill(
                         self.my_pos,
@@ -638,18 +580,11 @@ impl WorldManager {
             }
             retain
         });
+        self.get_noita_updates()
     }
 
-    pub(crate) fn get_noita_updates(&mut self) -> Vec<Vec<u8>> {
-        // Sends random data to noita to check if it crashes.
-        if env::var_os("NP_WORLD_SYNC_TEST").is_some() && self.current_update % 10 == 0 {
-            let chunk_data = ChunkData::make_random();
-            self.inbound_model
-                .apply_chunk_data(ChunkCoord(0, 0), &chunk_data)
-        }
-        let updates = self.inbound_model.get_all_noita_updates();
-        self.inbound_model.reset_change_tracking();
-        updates
+    pub(crate) fn get_noita_updates(&mut self) -> Vec<NoitaWorldUpdate> {
+        self.inbound_model.get_all_noita_updates()
     }
 
     pub(crate) fn reset(&mut self) {
@@ -772,15 +707,19 @@ impl WorldManager {
                     }
                 }
             }
-            WorldNetMessage::GetChunk { chunk, priority } => self.emit_msg(
-                Destination::Host,
-                WorldNetMessage::UpdateStorage {
-                    chunk,
-                    chunk_data: self.outbound_model.get_chunk_data(chunk),
-                    world_num: self.world_num,
-                    priority: Some(priority),
-                },
-            ),
+            WorldNetMessage::GetChunk { chunk, priority } => {
+                if let Some(chunk_data) = self.outbound_model.get_chunk_data(chunk) {
+                    self.emit_msg(
+                        Destination::Host,
+                        WorldNetMessage::UpdateStorage {
+                            chunk,
+                            chunk_data,
+                            world_num: self.world_num,
+                            priority: Some(priority),
+                        },
+                    )
+                }
+            }
             WorldNetMessage::AskForAuthority { chunk, priority } => {
                 self.emit_msg(
                     Destination::Host,
@@ -846,12 +785,12 @@ impl WorldManager {
                 if let Some(chunk_data) = chunk_data {
                     self.inbound_model.apply_chunk_data(chunk, &chunk_data);
                     self.outbound_model.apply_chunk_data(chunk, &chunk_data);
-                } else {
+                } else if let Some(chunk_data) = self.outbound_model.get_chunk_data(chunk) {
                     self.emit_msg(
                         Destination::Host,
                         WorldNetMessage::UpdateStorage {
                             chunk,
-                            chunk_data: self.outbound_model.get_chunk_data(chunk),
+                            chunk_data,
                             world_num: self.world_num,
                             priority: None,
                         },
@@ -871,15 +810,11 @@ impl WorldManager {
                 if world_num != self.world_num {
                     return;
                 }
-                if let Some(chunk_data) = chunk_data {
-                    let _ = self.tx.send((chunk, chunk_data.clone()));
-                    self.chunk_storage.insert(chunk, chunk_data);
-                    if let Some(p) = priority {
-                        self.cut_through_world_explosion_chunk(chunk);
-                        self.emit_got_authority(chunk, source, p)
-                    }
-                } else if priority.is_some() {
-                    warn!("{} sent give auth without chunk", source)
+                let _ = self.tx.send((chunk, chunk_data.clone()));
+                self.chunk_storage.insert(chunk, chunk_data);
+                if let Some(p) = priority {
+                    self.cut_through_world_explosion_chunk(chunk);
+                    self.emit_got_authority(chunk, source, p)
                 }
             }
             WorldNetMessage::RelinquishAuthority {
@@ -1108,16 +1043,17 @@ impl WorldManager {
                         },
                     );
                     self.chunk_state.insert(chunk, ChunkState::UnloadPending);
-                    let chunk_data = self.outbound_model.get_chunk_data(chunk);
-                    self.emit_msg(
-                        Destination::Host,
-                        WorldNetMessage::UpdateStorage {
-                            chunk,
-                            chunk_data,
-                            world_num: self.world_num,
-                            priority: None,
-                        },
-                    );
+                    if let Some(chunk_data) = self.outbound_model.get_chunk_data(chunk) {
+                        self.emit_msg(
+                            Destination::Host,
+                            WorldNetMessage::UpdateStorage {
+                                chunk,
+                                chunk_data,
+                                world_num: self.world_num,
+                                priority: None,
+                            },
+                        );
+                    }
                 } else {
                     self.emit_msg(
                         Destination::Peer(source),
@@ -1250,10 +1186,7 @@ impl WorldManager {
         let start = x - radius;
         let end = x + radius;
 
-        let air_pixel = Pixel {
-            flags: PixelFlags::Normal,
-            material: 0,
-        };
+        let air_pixel = Pixel::default();
         let chunk_storage: Vec<(ChunkCoord, ChunkData)> = self
             .chunk_storage
             .clone()
@@ -1335,10 +1268,7 @@ impl WorldManager {
         let dm2 = ((dmx.unsigned_abs() as u64 * dmx.unsigned_abs() as u64
             + dmy.unsigned_abs() as u64 * dmy.unsigned_abs() as u64) as f64)
             .recip();
-        let air_pixel = Pixel {
-            flags: PixelFlags::Normal,
-            material: 0,
-        };
+        let air_pixel = Pixel::default();
         let close_check = max_cx == min_cx || max_cy == min_cy;
         let iter_check = [
             (x + r, y),
@@ -1438,10 +1368,10 @@ impl WorldManager {
                         if dx * dx + dy * dy <= r {
                             let px = icy as usize * CHUNK_SIZE + icx as usize;
                             if (no_info
-                                || chunk.pixel(px).flags == PixelFlags::Unknown
+                                || chunk.pixel(px).flags() == PixelFlags::Unknown
                                 || self
                                     .materials
-                                    .get(&chunk.pixel(px).material)
+                                    .get(&chunk.pixel(px).mat())
                                     .map(|(_, _, cell, _)| cell.can_remove(true, false))
                                     .unwrap_or(true))
                                 && (chance == 100
@@ -1486,10 +1416,7 @@ impl WorldManager {
             (y - r).div_euclid(CHUNK_SIZE as i32),
             (y + r).div_euclid(CHUNK_SIZE as i32),
         );
-        let air_pixel = Pixel {
-            flags: PixelFlags::Normal,
-            material: mat.unwrap_or(0),
-        };
+        let air_pixel = Pixel::default();
         let (chunkx, chunky) = (
             x.div_euclid(CHUNK_SIZE as i32),
             y.div_euclid(CHUNK_SIZE as i32),
@@ -1543,10 +1470,10 @@ impl WorldManager {
                         if dd + dy * dy <= rs {
                             let px = icy as usize * CHUNK_SIZE + icx as usize;
                             if (no_info
-                                || chunk.pixel(px).flags == PixelFlags::Unknown
+                                || chunk.pixel(px).flags() == PixelFlags::Unknown
                                 || self
                                     .materials
-                                    .get(&chunk.pixel(px).material)
+                                    .get(&chunk.pixel(px).mat())
                                     .map(|(_, _, cell, _)| cell.can_remove(true, false))
                                     .unwrap_or(true))
                                 && (chance == 100
@@ -1649,7 +1576,7 @@ impl WorldManager {
                 let icy = y.rem_euclid(CHUNK_SIZE as i32);
                 let px = icy as usize * CHUNK_SIZE + icx as usize;
                 let pixel = working_chunk.pixel(px);
-                if let Some(stats) = self.materials.get(&pixel.material) {
+                if let Some(stats) = self.materials.get(&pixel.mat()) {
                     let h = (stats.1 as f64 * mult as f64) as u64;
                     if stats.0 > d || ray < h {
                         return (last_coord, 0, None);
@@ -1809,10 +1736,7 @@ impl WorldManager {
             (y - r as i32).div_euclid(CHUNK_SIZE as i32),
             (y + r as i32).div_euclid(CHUNK_SIZE as i32),
         );
-        let air_pixel = Pixel {
-            flags: PixelFlags::Normal,
-            material: 0,
-        };
+        let air_pixel = Pixel::default();
         let (chunkx, chunky) = (
             x.div_euclid(CHUNK_SIZE as i32),
             y.div_euclid(CHUNK_SIZE as i32),
@@ -1956,7 +1880,7 @@ impl WorldManager {
                         } {
                             if self
                                 .materials
-                                .get(&chunk.pixel(px).material)
+                                .get(&chunk.pixel(px).mat())
                                 .map(|(dur, _, cell, _)| *dur <= d && cell.can_remove(hole, liquid))
                                 .unwrap_or(true)
                             {
@@ -2115,10 +2039,7 @@ impl WorldManager {
             grouped.entry(key).or_default().push((a, b));
         }
         let data: Vec<(usize, Vec<(usize, u64)>)> = grouped.into_iter().collect();
-        let air_pixel = Pixel {
-            flags: PixelFlags::Normal,
-            material: 0,
-        };
+        let air_pixel = Pixel::default();
         let mut chunk = Chunk::default();
         let mut chunk_delta = Chunk::default();
         self.chunk_storage.get(&coord)?.apply_to_chunk(&mut chunk);
@@ -2177,7 +2098,7 @@ impl WorldManager {
                         data.iter().any(|(i, r)| j == *i && dd <= *r)
                     }) && self
                         .materials
-                        .get(&chunk.pixel(px).material)
+                        .get(&chunk.pixel(px).mat())
                         .map(|(dur, _, cell, _)| *dur <= d && cell.can_remove(hole, liquid))
                         .unwrap_or(true)
                     {
@@ -2271,7 +2192,7 @@ impl WorldManager {
                     let icy = y.rem_euclid(CHUNK_SIZE as i32);
                     let px = icy as usize * CHUNK_SIZE + icx as usize;
                     let pixel = working_chunk.pixel(px);
-                    if let Some(stats) = self.materials.get(&pixel.material) {
+                    if let Some(stats) = self.materials.get(&pixel.mat()) {
                         let h = (stats.1 as f64 * mult as f64) as u64;
                         avg += h;
                         count2 += 1;
@@ -2371,7 +2292,7 @@ impl WorldManager {
             }
             let p = icy as usize * CHUNK_SIZE + icx as usize;
             *px = image::Luma([
-                ((working_chunk.pixel(p).material * 255) as usize / self.materials.len()) as u8
+                ((working_chunk.pixel(p).mat() * 255) as usize / self.materials.len()) as u8
             ])
         }
     }
@@ -2386,8 +2307,8 @@ fn create_image(chunk: ChunkData, materials: &FxHashMap<u16, u32>) -> RgbaImage 
         let y = i / w as usize;
         let p = y * CHUNK_SIZE + x;
         let m = working_chunk.pixel(p);
-        if m.flags != PixelFlags::Unknown
-            && let Some(c) = materials.get(&m.material)
+        if m.flags() != PixelFlags::Unknown
+            && let Some(c) = materials.get(&m.mat())
         {
             let a = (c >> 24) & 0xFFu32;
             let r = (c >> 16) & 0xFFu32;
@@ -3140,11 +3061,13 @@ fn test_explosion_img_big_many() {
 }*/
 #[cfg(test)]
 use crate::net::LiquidType;
-use crate::net::world::world_model::chunk::PixelFlags;
 #[cfg(test)]
 use rand::seq::SliceRandom;
 #[cfg(test)]
 use serial_test::serial;
+use shared::world_sync::{
+    CHUNK_SIZE, ChunkCoord, NoitaWorldUpdate, Pixel, PixelFlags, WorldSyncToProxy,
+};
 #[cfg(test)]
 #[test]
 #[serial]
@@ -3413,4 +3336,47 @@ fn test_cut_perf() {
         total += timer.elapsed().as_micros();
     }
     println!("total micros: {}", total / iters);
+}
+
+impl WorldManager {
+    pub fn handle_noita_msg(&mut self, _: OmniPeerId, msg: WorldSyncToProxy) {
+        match msg {
+            WorldSyncToProxy::Updates(updates) => {
+                for update in updates {
+                    self.outbound_model
+                        .apply_noita_update(update, &mut self.is_storage_recent)
+                }
+            }
+            WorldSyncToProxy::End(pos, priority, world_num, tracked_chunks) => {
+                // let updated_chunks = self.outbound_model.updated_chunks().clone();
+                self.current_update += 1;
+                let mut chunk_packet: HashMap<OmniPeerId, Vec<(ChunkDelta, u8)>> = HashMap::new();
+                self.update_world_info(pos, world_num);
+                for chunk in tracked_chunks {
+                    // who sending may be better to be after the let some
+                    // but im too lazy to figure out for sure
+                    let who_sending = self.chunk_updated_locally(chunk, priority);
+                    let Some(delta) = self.outbound_model.get_chunk_delta(chunk, false) else {
+                        continue;
+                    };
+                    for (peer, pri) in who_sending {
+                        chunk_packet
+                            .entry(peer)
+                            .or_default()
+                            .push((delta.clone(), pri));
+                    }
+                }
+                let emit_queue = chunk_packet.into_iter().map(|(peer, chunkpacket)| {
+                    (
+                        Destination::Peer(peer),
+                        WorldNetMessage::ChunkPacket { chunkpacket },
+                    )
+                });
+                for (dst, msg) in emit_queue {
+                    self.emit_msg(dst, msg)
+                }
+                self.outbound_model.reset_change_tracking();
+            }
+        }
+    }
 }

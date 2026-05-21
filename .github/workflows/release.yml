@@ -30,7 +30,7 @@ jobs:
       - name: Build ewext
         run: |
           rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
-          CARGO_TARGET_I686_PC_WINDOWS_GNU_RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" cargo +nightly build --release --target=i686-pc-windows-gnu -Zbuild-std="panic_abort,std"
+          cargo +nightly build --release --target=i686-pc-windows-gnu -Zbuild-std="panic_abort,std"
         working-directory: ./ewext
       - name: Copy ewext
         run: cp ewext/target/i686-pc-windows-gnu/release/ewext.dll quant.ew/ewext.dll
@@ -61,7 +61,7 @@ jobs:
       - name: Build Linux proxy release
         run: cargo build --release
         working-directory: ./noita-proxy
-
+      
       - name: Create archives
         run: python scripts/ci_make_archives.py linux
 
@@ -80,9 +80,9 @@ jobs:
   #       with:
   #         workspaces: noita-proxy -> target
 
-  #     - name: Build Macos proxy release
-  #       run: cargo build --release
-  #       working-directory: ./noita-proxy
+      - name: Build Macos proxy release
+        run: cargo build --release
+        working-directory: ./noita-proxy
 
   #     - name: Create archives
   #       run: python scripts/ci_make_archives.py macos

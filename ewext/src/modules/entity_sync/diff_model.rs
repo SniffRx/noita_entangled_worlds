@@ -95,7 +95,7 @@ impl LocalDiffModel {
             .entity_entries
             .iter()
             .skip(start)
-            .take(end - start)
+            .take(end.checked_sub(start).unwrap_or_default())
             .filter_map(|(lid, p)| {
                 let EntityEntryPair {
                     current: Some(current),
@@ -116,6 +116,7 @@ impl LocalDiffModel {
                             drops_gold: current.drops_gold,
                             is_charmed: current.is_charmed(),
                             hp: current.hp,
+                            max_hp: current.max_hp,
                             counter: current.counter,
                             phys: current.phys.clone(),
                             synced_var: current.synced_var.clone(),
@@ -154,6 +155,7 @@ impl LocalDiffModel {
                         drops_gold: current.drops_gold,
                         is_charmed: current.is_charmed(),
                         hp: current.hp,
+                        max_hp: current.max_hp,
                         counter: current.counter,
                         phys: current.phys.clone(),
                         synced_var: current.synced_var.clone(),
@@ -429,8 +431,8 @@ impl LocalDiffModelTracker {
         if let Some(damage) =
             entity_manager.try_get_first_component::<DamageModelComponent>(ComponentTag::None)
         {
-            let hp = damage.hp()?;
-            info.hp = hp as f32;
+            info.hp = damage.hp()? as f32;
+            info.max_hp = damage.max_hp()? as f32;
         }
 
         if entity_manager.check_all_phys_init()? {
@@ -755,6 +757,7 @@ impl LocalDiffModelTracker {
                     drops_gold: info.drops_gold,
                     is_charmed: info.is_charmed(),
                     hp: info.hp,
+                    max_hp: info.max_hp,
                     counter: info.counter,
                     phys: info.phys.clone(),
                     synced_var: info.synced_var.clone(),
@@ -953,6 +956,7 @@ impl LocalDiffModel {
                     vx: 0.0,
                     vy: 0.0,
                     hp: 1.0,
+                    max_hp: 1.0,
                     phys: Vec::new(),
                     cost: 0,
                     game_effects: Vec::new(),
@@ -1085,12 +1089,7 @@ impl LocalDiffModel {
                 && let Some(damage) = entity_manager
                     .try_get_first_component::<DamageModelComponent>(ComponentTag::None)
             {
-                if entity_data.hp > damage.max_hp_cap()? as f32 {
-                    damage.set_max_hp_cap(entity_data.hp as f64)?;
-                }
-                if entity_data.hp > damage.max_hp()? as f32 {
-                    damage.set_max_hp(entity_data.hp as f64)?;
-                }
+                damage.set_max_hp(entity_data.max_hp as f64)?;
                 damage.set_hp(entity_data.hp as f64)?;
             }
             if !entity_data.drops_gold {
@@ -1284,6 +1283,14 @@ impl LocalDiffModel {
                         &current.hp,
                         &mut last.hp,
                         || EntityUpdate::SetHp(current.hp),
+                        &mut self.update_buffer,
+                        &mut had_any_delta,
+                        lid,
+                    );
+                    diff(
+                        &current.max_hp,
+                        &mut last.max_hp,
+                        || EntityUpdate::SetMaxHp(current.max_hp),
                         &mut self.update_buffer,
                         &mut had_any_delta,
                         lid,
@@ -1534,7 +1541,8 @@ impl RemoteDiffModel {
         &mut self,
         diff: Vec<EntityInit>,
         entity_manager: &mut EntityManager,
-    ) -> Vec<EntityID> {
+        em: &mut noita_api::noita::types::EntityManager,
+    ) -> eyre::Result<Vec<EntityID>> {
         let mut dont_kill = Vec::with_capacity(self.waiting_for_lid.len());
         for info in diff {
             if let Some((&old_lid, _)) = self
@@ -1551,14 +1559,20 @@ impl RemoteDiffModel {
             }
             if let Some(ent) = self.waiting_for_lid.remove(&info.gid) {
                 self.tracked.insert(info.lid, ent);
-                let _ =
-                    init_remote_entity(ent, Some(info.lid), Some(info.gid), false, entity_manager);
+                let _ = init_remote_entity(
+                    ent,
+                    Some(info.lid),
+                    Some(info.gid),
+                    false,
+                    entity_manager,
+                    em,
+                );
                 dont_kill.push(ent);
             }
             self.lid_to_gid.insert(info.lid, info.gid);
             self.entity_infos.insert(info.lid, info.info);
         }
-        dont_kill
+        Ok(dont_kill)
     }
     pub(crate) fn apply_diff(
         &mut self,
@@ -1594,6 +1608,7 @@ impl RemoteDiffModel {
                 EntityUpdate::SetRotation(r) => ent_data.r = r,
                 EntityUpdate::SetVelocity(vx, vy) => (ent_data.vx, ent_data.vy) = (vx, vy),
                 EntityUpdate::SetHp(hp) => ent_data.hp = hp,
+                EntityUpdate::SetMaxHp(max_hp) => ent_data.max_hp = max_hp,
                 EntityUpdate::SetFacingDirection(direction) => {
                     ent_data.facing_direction = direction
                 }
@@ -1802,9 +1817,8 @@ impl RemoteDiffModel {
         if let Some(damage) =
             entity_manager.try_get_first_component::<DamageModelComponent>(ComponentTag::None)
         {
-            if entity_info.hp > damage.max_hp()? as f32 {
-                damage.set_max_hp(entity_info.hp as f64)?
-            }
+            damage.set_max_hp(entity_info.max_hp as f64)?;
+
             let current_hp = damage.hp()? as f32;
             if current_hp > entity_info.hp {
                 let old = damage.object_get_value::<f64>("damage_multipliers", "curse")?;
@@ -2090,6 +2104,7 @@ impl RemoteDiffModel {
                                 self.lid_to_gid.get(lid).copied(),
                                 entity_info.drops_gold,
                                 entity_manager,
+                                ctx.globals.entity_manager,
                             )?;
                             self.tracked.insert(*lid, entity);
                         }
@@ -2208,11 +2223,11 @@ impl RemoteDiffModel {
         }
     }
 
-    /*pub(crate) fn drain_backtrack(&mut self) -> impl Iterator<Item = EntityID> + '_ {
+    /*pub(crate) fn drain_backtrack(&mut self) -> impl DoubleEndedIterator<Item = EntityID> + '_ {
         self.backtrack.drain(..)
     }*/
 
-    pub(crate) fn drain_grab_request(&mut self) -> impl Iterator<Item = Lid> + '_ {
+    pub(crate) fn drain_grab_request(&mut self) -> impl DoubleEndedIterator<Item = Lid> + '_ {
         self.grab_request.drain(..)
     }
 }
@@ -2226,6 +2241,7 @@ pub fn init_remote_entity(
     gid: Option<Gid>,
     drops_gold: bool,
     entity_manager: &mut EntityManager,
+    em: &mut noita_api::noita::types::EntityManager,
 ) -> eyre::Result<()> {
     if entity.has_tag("player_unit") {
         entity.kill();
@@ -2436,7 +2452,7 @@ pub fn init_remote_entity(
             .try_get_first_component_including_disabled::<PhysicsBody2Component>(ComponentTag::None)
             .is_none()
     {
-        ephemerial(entity.0.get() as u32)?
+        ephemerial(entity.0.get().cast_unsigned(), em)
     }
 
     Ok(())

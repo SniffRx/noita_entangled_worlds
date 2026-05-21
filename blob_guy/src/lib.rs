@@ -1,40 +1,37 @@
 pub mod blob_guy;
 pub mod chunk;
-pub mod noita;
 use crate::blob_guy::Blob;
-use crate::chunk::Chunk;
-use crate::noita::ParticleWorldState;
+use crate::chunk::Chunks;
 use noita_api::add_lua_fn;
 use noita_api::lua::LUA;
 use noita_api::lua::LuaState;
 use noita_api::lua::lua_bindings::{LUA_REGISTRYINDEX, lua_State};
+use noita_api::noita::world::ParticleWorldState;
 use smallvec::SmallVec;
-use std::cell::{LazyCell, RefCell};
-use std::ffi::{c_int, c_void};
-use std::hint::black_box;
-use std::sync::LazyLock;
+use std::cell::RefCell;
+use std::ffi::c_int;
+use std::mem::MaybeUninit;
 pub const CHUNK_SIZE: usize = 128;
 pub const CHUNK_AMOUNT: usize = 3;
-#[derive(Default)]
 struct State {
-    particle_world_state: ParticleWorldState,
+    particle_world_state: MaybeUninit<ParticleWorldState>,
     blobs: SmallVec<[Blob; 8]>,
-    world: [Chunk; CHUNK_AMOUNT * CHUNK_AMOUNT],
+    world: Chunks,
     blob_guy: u16,
 }
 thread_local! {
-    static STATE: LazyCell<RefCell<State>> = LazyCell::new(|| {
-        Default::default()
-    });
+    static STATE: RefCell<State> = State {
+        particle_world_state: MaybeUninit::uninit(),
+        blobs: Default::default(),
+        world: Default::default(),
+        blob_guy: 0,
+    }.into();
 }
-static KEEP_SELF_LOADED: LazyLock<Result<libloading::Library, libloading::Error>> =
-    LazyLock::new(|| unsafe { libloading::Library::new("blob_guy.dll") });
 /// # Safety
 ///
 /// Only gets called by lua when loading a module.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn luaopen_blob_guy(lua: *mut lua_State) -> c_int {
-    let _ = black_box(KEEP_SELF_LOADED.as_ref());
     unsafe {
         LUA.lua_createtable(lua, 0, 0);
         LUA.lua_createtable(lua, 0, 0);
@@ -48,38 +45,12 @@ pub unsafe extern "C" fn luaopen_blob_guy(lua: *mut lua_State) -> c_int {
     }
     1
 }
-fn init_particle_world_state(lua: LuaState) -> eyre::Result<()> {
+fn init_particle_world_state(_: LuaState) -> eyre::Result<()> {
     STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        #[cfg(target_arch = "x86")]
-        let world_ptr = lua.to_integer(1) as *const c_void;
-        let chunk_map_ptr = unsafe { (lua.to_integer(2) as *const c_void).offset(8) };
-        let material_list_ptr = lua.to_integer(3) as *const c_void;
-        #[cfg(target_arch = "x86")]
-        let construct_ptr = lua.to_integer(4) as *const c_void;
-        #[cfg(target_arch = "x86")]
-        let remove_ptr = lua.to_integer(5) as *const c_void;
+        let mut state = state.try_borrow_mut()?;
         let blob_guy = noita_api::raw::cell_factory_get_type("blob_guy".into())? as u16;
         state.blob_guy = blob_guy;
-        let pws = ParticleWorldState {
-            #[cfg(target_arch = "x86")]
-            world_ptr,
-            chunk_map_ptr,
-            material_list_ptr,
-            blob_guy,
-            blob_ptr: unsafe {
-                material_list_ptr
-                    .offset(size_of::<noita::ntypes::CellData>() as isize * blob_guy as isize)
-            },
-            pixel_array: Default::default(),
-            #[cfg(target_arch = "x86")]
-            construct_ptr,
-            #[cfg(target_arch = "x86")]
-            remove_ptr,
-            shift_x: 0,
-            shift_y: 0,
-        };
-        state.particle_world_state = pws;
+        state.particle_world_state = MaybeUninit::new(ParticleWorldState::new()?);
         Ok(())
     })
 }
