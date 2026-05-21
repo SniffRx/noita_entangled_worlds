@@ -36,7 +36,7 @@ use crate::{
     AudioSettings, DefaultSettings, GameMode, GameSettings, LocalHealthMode,
     bookkeeping::save_state::{SaveState, SaveStateEntry},
 };
-use shared::des::ProxyToDes;
+use shared::des::{DesToProxy, ProxyToDes, RemoteDes, UpdateOrUpload};
 use shared::world_sync::{ChunkCoord, Pixel, PixelFlags, ProxyToWorldSync};
 use tangled::Reliability;
 use tracing::{error, info, warn};
@@ -60,6 +60,35 @@ pub fn ws_encode_proxy_bin(key: u8, data: &[u8]) -> NoitaInbound {
     buf.push(key);
     buf.extend(data);
     NoitaInbound::RawMessage(buf)
+}
+
+fn des_to_proxy_reliability(msg: &DesToProxy) -> Reliability {
+    match msg {
+        DesToProxy::UpdatePosition(UpdateOrUpload::Update(_)) => Reliability::Unreliable,
+        DesToProxy::UpdatePositions(updates)
+            if updates
+                .iter()
+                .all(|update| matches!(update, UpdateOrUpload::Update(_))) =>
+        {
+            Reliability::Unreliable
+        }
+        _ => Reliability::Reliable,
+    }
+}
+
+fn remote_message_reliability(requested_reliable: bool, message: &RemoteMessage) -> Reliability {
+    match message {
+        RemoteMessage::RemoteDes(RemoteDes::EntityUpdate(_) | RemoteDes::CameraPos(_)) => {
+            Reliability::Unreliable
+        }
+        _ => Reliability::from_reliability_bool(requested_reliable),
+    }
+}
+
+fn split_des_updates(updates: Vec<UpdateOrUpload>) -> (Vec<UpdateOrUpload>, Vec<UpdateOrUpload>) {
+    updates
+        .into_iter()
+        .partition(|update| matches!(update, UpdateOrUpload::Update(_)))
 }
 
 pub(crate) fn ws_encode_mod(peer: OmniPeerId, data: &[u8]) -> NoitaInbound {
@@ -1186,11 +1215,37 @@ impl NetManager {
                 if self.is_host() {
                     state.des.handle_noita_msg(self.peer.my_id(), des_to_proxy)
                 } else {
-                    self.send(
-                        self.peer.host_id(),
-                        &NetMsg::ForwardDesToProxy(des_to_proxy),
-                        Reliability::Reliable,
-                    );
+                    match des_to_proxy {
+                        DesToProxy::UpdatePositions(updates) => {
+                            let (transient_updates, reliable_updates) = split_des_updates(updates);
+                            if !transient_updates.is_empty() {
+                                self.send(
+                                    self.peer.host_id(),
+                                    &NetMsg::ForwardDesToProxy(DesToProxy::UpdatePositions(
+                                        transient_updates,
+                                    )),
+                                    Reliability::Unreliable,
+                                );
+                            }
+                            if !reliable_updates.is_empty() {
+                                self.send(
+                                    self.peer.host_id(),
+                                    &NetMsg::ForwardDesToProxy(DesToProxy::UpdatePositions(
+                                        reliable_updates,
+                                    )),
+                                    Reliability::Reliable,
+                                );
+                            }
+                        }
+                        des_to_proxy => {
+                            let reliability = des_to_proxy_reliability(&des_to_proxy);
+                            self.send(
+                                self.peer.host_id(),
+                                &NetMsg::ForwardDesToProxy(des_to_proxy),
+                                reliability,
+                            );
+                        }
+                    }
                 }
             }
             NoitaOutbound::WorldSyncToProxy(world_sync_msg) => state
@@ -1202,7 +1257,7 @@ impl NetManager {
                 message,
             } => {
                 let destination = destination.convert::<OmniPeerId>();
-                let reliability = Reliability::from_reliability_bool(reliable);
+                let reliability = remote_message_reliability(reliable, &message);
                 match destination {
                     Destination::Peers(peers) => {
                         if !peers.is_empty() {
