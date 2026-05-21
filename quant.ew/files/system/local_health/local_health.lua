@@ -247,7 +247,7 @@ local function allow_notplayer_perk(perk_id)
 end
 
 local function reduce_hp()
-    local p = ctx.proxy_opt.health_lost_on_revive
+    local p = ctx.proxy_opt.respawn_hp_percent or ctx.proxy_opt.health_lost_on_revive
     if p <= 0 then
         p = 100
     end
@@ -564,11 +564,10 @@ function module.on_world_update()
     local hp_new, max_hp_new, has_hp = util.get_ent_health(ctx.my_player.entity)
     if not ctx.my_player.currently_polymorphed and has_hp and hp_new <= 0 then
         -- Restore the player back to small amount of hp.
-        local new_hp = 3 * max_hp_new / 20
-        if ctx.proxy_opt.no_notplayer then
-            new_hp = new_hp * 5
-        end
-        local final_hp = math.max(new_hp, math.min(2 / 5, max_hp_new))
+        local hp_percent = ctx.proxy_opt.respawn_hp_percent or ctx.proxy_opt.health_lost_on_revive or 15
+        hp_percent = math.max(1, math.min(hp_percent, 100))
+
+        local final_hp = max_hp_new * hp_percent / 100
         util.set_ent_health(ctx.my_player.entity, { final_hp, max_hp_new })
         for _, child in ipairs(EntityGetAllChildren(ctx.my_player.entity) or {}) do
             if EntityHasTag(child, "no_heal_in_meat_biome") then
@@ -685,7 +684,7 @@ end
 
 rpc.opts_reliable()
 function rpc.loss_hp()
-    local p = ctx.proxy_opt.health_lost_on_revive
+    local p = ctx.proxy_opt.respawn_hp_percent or ctx.proxy_opt.health_lost_on_revive
     if p <= 0 then
         p = 100
     end
@@ -798,8 +797,9 @@ ctx.cap.health = {
                 local _, max_hp_new, has_hp = util.get_ent_health(ctx.my_player.entity)
                 if not ctx.my_player.currently_polymorphed and has_hp then
                     -- Restore the player back to small amount of hp.
-                    local new_hp = 3 * max_hp_new / 20
-                    local final_hp = math.max(new_hp, math.min(2 / 5, max_hp_new))
+                    local hp_percent = ctx.proxy_opt.respawn_hp_percent or ctx.proxy_opt.health_lost_on_revive or 15
+                    hp_percent = math.max(1, math.min(hp_percent, 100))
+                    local final_hp = max_hp_new * hp_percent / 100
                     util.set_ent_health(ctx.my_player.entity, { final_hp, max_hp_new })
                 end
                 player_died()
