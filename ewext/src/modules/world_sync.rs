@@ -171,7 +171,7 @@ impl Module for WorldSync {
             return Ok(());
         };
         let (x, y) = (ent.transform.pos.x, ent.transform.pos.y);
-        let tracked_radius = 1;
+        let tracked_radius = 2;
         let tracked_square = tracked_radius * 2 + 1;
         let mut tracked_chunks = (0..tracked_square * tracked_square)
             .into_iter()
