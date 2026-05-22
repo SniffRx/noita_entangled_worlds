@@ -89,7 +89,7 @@ function nickname.add_label(player_entity, text, font_filename, scale, alpha, ox
     local font = nickname.parse(font_filename)
     local textwidth = nickname.calculate_textwidth(text, font)
     if ox == nil then
-        ox = textwidth * 0.5
+        ox = -12
     end
     if oy == nil then
         oy = 13 + 12 / scale
