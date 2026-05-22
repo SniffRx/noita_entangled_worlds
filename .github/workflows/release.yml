@@ -53,10 +53,15 @@ jobs:
       - name: Create archive
         run: python scripts/ci_make_archives.py mod
 
+      - name: Prepare workflow artifact
+        run: |
+          mkdir -p target/upload/quant.ew
+          unzip -q target/quant.ew.zip -d target/upload/quant.ew
+
       - uses: actions/upload-artifact@v4
         with:
-          name: quant.ew.zip
-          path: target/quant.ew.zip
+          name: quant.ew
+          path: target/upload/quant.ew
 
   build-proxy-linux:
     name: Build proxy for linux
@@ -94,10 +99,15 @@ jobs:
       - name: Create archives
         run: python scripts/ci_make_archives.py linux
 
+      - name: Prepare workflow artifact
+        run: |
+          mkdir -p target/upload/noita-proxy-linux
+          unzip -q target/noita-proxy-linux.zip -d target/upload/noita-proxy-linux
+
       - uses: actions/upload-artifact@v4
         with:
-          name: noita-proxy-linux.zip
-          path: target/noita-proxy-linux.zip
+          name: noita-proxy-linux
+          path: target/upload/noita-proxy-linux
 
   build-proxy-windows:
     name: Build proxy for windows
@@ -121,10 +131,16 @@ jobs:
       - name: Create archives
         run: python scripts/ci_make_archives.py windows
 
+      - name: Prepare workflow artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/upload/noita-proxy-win | Out-Null
+          Expand-Archive -Path target/noita-proxy-win.zip -DestinationPath target/upload/noita-proxy-win -Force
+
       - uses: actions/upload-artifact@v4
         with:
-          name: noita-proxy-win.zip
-          path: target/noita-proxy-win.zip
+          name: noita-proxy-win
+          path: target/upload/noita-proxy-win
 
   release:
     name: Release
@@ -161,7 +177,25 @@ jobs:
       - name: Download all workflow run artifacts
         uses: actions/download-artifact@v4
         with:
-          merge-multiple: true
+          path: release-artifacts
+
+      - name: Create release archives
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+
+          for name in ("quant.ew", "noita-proxy-linux", "noita-proxy-win"):
+              src = Path("release-artifacts") / name
+              if not src.is_dir():
+                  raise SystemExit(f"Missing artifact directory: {src}")
+
+              with ZipFile(f"{name}.zip", "w", compression=ZIP_DEFLATED, compresslevel=9) as release:
+                  for path in src.rglob("*"):
+                      if path.is_file():
+                          release.write(path, path.relative_to(src))
+          PY
 
       - uses: ncipollo/release-action@v1
         with:

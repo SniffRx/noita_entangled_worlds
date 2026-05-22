@@ -647,7 +647,6 @@ impl Drop for App {
     }
 }
 
-#[allow(clippy::large_enum_variant)]
 enum AppState {
     Connect,
     ModManager,

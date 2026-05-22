@@ -19,7 +19,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use shared::des::DesToProxy::UpdatePositions;
 use shared::{
     Destination, NoitaOutbound, PeerId, RemoteMessage, WorldPos,
-    des::{EntityInit, EntityUpdate, Gid, InterestRequest, ProjectileFired, RemoteDes},
+    des::{Gid, InterestRequest, ProjectileFired, RemoteDes},
 };
 use std::sync::{LazyLock, Mutex};
 mod diff_model;
@@ -97,7 +97,7 @@ impl Default for EntitySync {
         Self {
             look_current_entity: EntityID::try_from(1).unwrap(),
 
-            interest_tracker: InterestTracker::new(512.0),
+            interest_tracker: InterestTracker::new(384.0),
             local_diff_model: LocalDiffModel::default(),
             remote_models: Default::default(),
 
@@ -142,13 +142,19 @@ impl EntitySync {
     fn clear_buffer(&mut self, ctx: &mut ModuleCtx, new_intersects: &[PeerId]) -> eyre::Result<()> {
         let err1 = if !self.local_diff_model.init_buffer.is_empty() {
             let res = std::mem::take(&mut self.local_diff_model.init_buffer);
-            let destination = Destination::Peers(
-                self.interest_tracker
-                    .iter_interested()
-                    .filter(|p| !new_intersects.contains(p))
-                    .collect(),
-            );
-            let (diff, err) = send_entity_init_batched(ctx, true, destination, res);
+            let (RemoteDes::EntityInit(diff), err) = send_remotedes_ret(
+                ctx,
+                true,
+                Destination::Peers(
+                    self.interest_tracker
+                        .iter_interested()
+                        .filter(|p| !new_intersects.contains(p))
+                        .collect(),
+                ),
+                RemoteDes::EntityInit(res),
+            ) else {
+                unreachable!()
+            };
             self.local_diff_model.init_buffer = diff;
             self.local_diff_model.uninit();
             err
@@ -157,13 +163,19 @@ impl EntitySync {
         };
         if !self.local_diff_model.update_buffer.is_empty() {
             let res = std::mem::take(&mut self.local_diff_model.update_buffer);
-            let destination = Destination::Peers(
-                self.interest_tracker
-                    .iter_interested()
-                    .filter(|p| !new_intersects.contains(p))
-                    .collect(),
-            );
-            let (diff, err) = send_entity_update_batched(ctx, true, destination, res);
+            let (RemoteDes::EntityUpdate(diff), err) = send_remotedes_ret(
+                ctx,
+                true,
+                Destination::Peers(
+                    self.interest_tracker
+                        .iter_interested()
+                        .filter(|p| !new_intersects.contains(p))
+                        .collect(),
+                ),
+                RemoteDes::EntityUpdate(res),
+            ) else {
+                unreachable!()
+            };
             self.local_diff_model.update_buffer = diff;
             err1?;
             err?;
@@ -467,16 +479,29 @@ impl EntitySync {
 
     pub(crate) fn cross_item_thrown(&mut self, entity: Option<EntityID>) -> eyre::Result<()> {
         let entity = entity.ok_or_eyre("Passed entity 0 into cross call")?;
+
         if !entity.is_alive() {
             return Ok(());
         }
-        // It might be already tracked in case of tablet telekinesis, no need to track it again.
+
+        // It might be already tracked in case of tablet telekinesis,
+        // no need to track it again.
         if !self.local_diff_model.is_entity_tracked(entity) {
             self.local_diff_model
                 .track_and_upload_entity(entity, &mut self.entity_manager)?;
         }
+
         Ok(())
     }
+    // pub(crate) fn cross_item_thrown(&mut self, entity: Option<EntityID>) -> eyre::Result<()> {
+    //     let entity = entity.ok_or_eyre("Passed entity 0 into cross call")?;
+    //     // It might be already tracked in case of tablet telekinesis, no need to track it again.
+    //     if !self.local_diff_model.is_entity_tracked(entity) {
+    //         self.local_diff_model
+    //             .track_and_upload_entity(entity, &mut self.entity_manager)?;
+    //     }
+    //     Ok(())
+    // }
 
     pub(crate) fn cross_death_notify(
         &mut self,
@@ -612,7 +637,7 @@ impl Module for EntitySync {
         if frame_num < 10 {
             return Ok(());
         }
-        if frame_num % 5 == 0 {
+        if frame_num % 4 == 0 {
             send_remotedes(
                 ctx.net,
                 false,
@@ -620,7 +645,7 @@ impl Module for EntitySync {
                 RemoteDes::InterestRequest(InterestRequest { pos }),
             )?;
         }
-        if frame_num % 5 == 1 {
+        if frame_num % 4 == 1 {
             send_remotedes(
                 ctx.net,
                 false,
@@ -686,8 +711,14 @@ impl Module for EntitySync {
             if !new_intersects.is_empty() {
                 self.local_diff_model.make_init();
                 let res = std::mem::take(&mut self.local_diff_model.init_buffer);
-                let (diff, err) =
-                    send_entity_init_batched(ctx, true, Destination::Peers(new_intersects), res);
+                let (RemoteDes::EntityInit(diff), err) = send_remotedes_ret(
+                    ctx,
+                    true,
+                    Destination::Peers(new_intersects),
+                    RemoteDes::EntityInit(res),
+                ) else {
+                    unreachable!()
+                };
                 self.local_diff_model.init_buffer = diff;
                 self.local_diff_model.uninit();
                 err?;
@@ -695,11 +726,8 @@ impl Module for EntitySync {
             {
                 let proj = &mut self.pending_fired_projectiles.lock().unwrap();
                 if !proj.is_empty() {
-                    const MAX_PROJECTILES_PER_MESSAGE: usize = 32;
-                    while !proj.is_empty() {
-                        let batch_len = proj.len().min(MAX_PROJECTILES_PER_MESSAGE);
-                        let data = proj
-                            .drain(..batch_len)
+                    let data = proj
+                        .drain(..)
                         .map(|(ent, mut proj)| {
                             if ent.is_alive()
                                 && let Ok(Some(vel)) = ent
@@ -708,17 +736,16 @@ impl Module for EntitySync {
                                     )
                                 {
                                     proj.vel = vel.m_velocity().ok()
-                            }
+                                }
                             proj
                         })
-                            .collect();
-                        send_remotedes(
-                            ctx.net,
-                            true,
-                            Destination::Peers(self.interest_tracker.iter_interested().collect()),
-                            RemoteDes::Projectiles(data),
-                        )?;
-                    }
+                        .collect();
+                    send_remotedes(
+                        ctx.net,
+                        true,
+                        Destination::Peers(self.interest_tracker.iter_interested().collect()),
+                        RemoteDes::Projectiles(data),
+                    )?;
                 }
             }
             if !dead.is_empty() {
@@ -902,59 +929,24 @@ fn send_remotedes(
     ctx.send(&message)
 }
 
-fn copy_destination(destination: &Destination<PeerId>) -> Destination<PeerId> {
-    match destination {
-        Destination::Peers(peers) => Destination::Peers(peers.clone()),
-        Destination::Peer(peer) => Destination::Peer(*peer),
-        Destination::Host => Destination::Host,
-        Destination::Broadcast => Destination::Broadcast,
-    }
-}
-
-fn send_entity_init_batched(
+fn send_remotedes_ret(
     ctx: &mut ModuleCtx<'_>,
     reliable: bool,
     destination: Destination<PeerId>,
-    mut pending: Vec<EntityInit>,
-) -> (Vec<EntityInit>, Result<(), eyre::Error>) {
-    const MAX_ENTITY_INIT_PER_MESSAGE: usize = 16;
-    while !pending.is_empty() {
-        let batch_len = pending.len().min(MAX_ENTITY_INIT_PER_MESSAGE);
-        let batch = pending.drain(..batch_len).collect::<Vec<_>>();
-        let msg = NoitaOutbound::RemoteMessage {
-            reliable,
-            destination: copy_destination(&destination),
-            message: RemoteMessage::RemoteDes(RemoteDes::EntityInit(batch.clone())),
-        };
-        if let Err(err) = ctx.net.send(&msg) {
-            let mut unsent = batch;
-            unsent.extend(pending);
-            return (unsent, Err(err));
-        }
-    }
-    (Vec::new(), Ok(()))
-}
-
-fn send_entity_update_batched(
-    ctx: &mut ModuleCtx<'_>,
-    reliable: bool,
-    destination: Destination<PeerId>,
-    mut pending: Vec<EntityUpdate>,
-) -> (Vec<EntityUpdate>, Result<(), eyre::Error>) {
-    const MAX_ENTITY_UPDATES_PER_MESSAGE: usize = 96;
-    while !pending.is_empty() {
-        let batch_len = pending.len().min(MAX_ENTITY_UPDATES_PER_MESSAGE);
-        let batch = pending.drain(..batch_len).collect::<Vec<_>>();
-        let msg = NoitaOutbound::RemoteMessage {
-            reliable,
-            destination: copy_destination(&destination),
-            message: RemoteMessage::RemoteDes(RemoteDes::EntityUpdate(batch.clone())),
-        };
-        if let Err(err) = ctx.net.send(&msg) {
-            let mut unsent = batch;
-            unsent.extend(pending);
-            return (unsent, Err(err));
-        }
-    }
-    (Vec::new(), Ok(()))
+    remote_des: RemoteDes,
+) -> (RemoteDes, Result<(), eyre::Error>) {
+    let message = NoitaOutbound::RemoteMessage {
+        reliable,
+        destination,
+        message: RemoteMessage::RemoteDes(remote_des),
+    };
+    let err = ctx.net.send(&message);
+    let NoitaOutbound::RemoteMessage {
+        message: RemoteMessage::RemoteDes(des),
+        ..
+    } = message
+    else {
+        unreachable!()
+    };
+    (des, err)
 }

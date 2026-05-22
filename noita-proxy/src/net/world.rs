@@ -3366,16 +3366,14 @@ impl WorldManager {
                             .push((delta.clone(), pri));
                     }
                 }
-                const MAX_CHUNKS_PER_PACKET: usize = 4;
-                for (peer, chunkpacket) in chunk_packet {
-                    for chunkpacket in chunkpacket.chunks(MAX_CHUNKS_PER_PACKET) {
-                        self.emit_msg(
-                            Destination::Peer(peer),
-                            WorldNetMessage::ChunkPacket {
-                                chunkpacket: chunkpacket.to_vec(),
-                            },
-                        )
-                    }
+                let emit_queue = chunk_packet.into_iter().map(|(peer, chunkpacket)| {
+                    (
+                        Destination::Peer(peer),
+                        WorldNetMessage::ChunkPacket { chunkpacket },
+                    )
+                });
+                for (dst, msg) in emit_queue {
+                    self.emit_msg(dst, msg)
                 }
                 self.outbound_model.reset_change_tracking();
             }
