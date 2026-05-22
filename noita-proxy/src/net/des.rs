@@ -7,7 +7,7 @@ use shared::des::{
     DesToProxy, FullEntityData, Gid, ProxyToDes, REQUEST_AUTHORITY_RADIUS, UpdateOrUpload,
     UpdatePosition,
 };
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::bookkeeping::save_state::{SaveState, SaveStateEntry};
 
@@ -70,28 +70,9 @@ impl DesManager {
         }
     }
 
-    fn has_authority(&self, gid: Gid, source: OmniPeerId) -> bool {
-        self.authority
-            .get(&gid)
-            .is_some_and(|authority| *authority == source)
-    }
-
-    fn can_claim_upload(&self, gid: Gid, source: OmniPeerId) -> bool {
-        self.authority
-            .get(&gid)
-            .is_none_or(|authority| *authority == source)
-    }
-
     fn handle_update(&mut self, update: UpdateOrUpload, source: OmniPeerId) {
         match update {
             UpdateOrUpload::Upload(full_entity_data) => {
-                if !self.can_claim_upload(full_entity_data.gid, source) {
-                    debug!(
-                        "Ignoring DES upload for {:?} from non-authority {source}",
-                        full_entity_data.gid
-                    );
-                    return;
-                }
                 self.authority.insert(full_entity_data.gid, source);
                 self.entity_storage
                     .entities
@@ -107,10 +88,6 @@ impl DesManager {
                     phys,
                     synced_var,
                 } = update;
-                if !self.has_authority(gid, source) {
-                    debug!("Ignoring DES update for {gid:?} from non-authority {source}");
-                    return;
-                }
                 self.remove_gid_from_tree(gid);
                 if let Some(entity) = self.entity_storage.entities.get_mut(&gid) {
                     entity.pos = pos;
@@ -119,8 +96,6 @@ impl DesManager {
                     entity.counter = counter;
                     entity.phys = phys;
                     entity.synced_var = synced_var;
-                } else if self.entity_storage.entities.is_empty() {
-                    debug!("Ignoring stale entity update after DES storage reset: {gid:?}");
                 } else {
                     warn!("Failed to find entity {gid:?} to update");
                 }
@@ -129,12 +104,9 @@ impl DesManager {
     }
 
     pub(crate) fn handle_noita_msg(&mut self, source: OmniPeerId, msg: DesToProxy) {
+        // TODO maybe check that authorities are correct?
         match msg {
             DesToProxy::UpdateWand(gid, wand) => {
-                if !self.has_authority(gid, source) {
-                    debug!("Ignoring DES wand update for {gid:?} from non-authority {source}");
-                    return;
-                }
                 self.entity_storage
                     .entities
                     .entry(gid)
@@ -142,10 +114,6 @@ impl DesManager {
             }
             DesToProxy::DeleteEntity(gid, ent) => {
                 if self.entity_storage.entities.contains_key(&gid) {
-                    if !self.has_authority(gid, source) {
-                        debug!("Ignoring DES delete for {gid:?} from non-authority {source}");
-                        return;
-                    }
                     self.authority.remove(&gid);
                     self.entity_storage.entities.remove(&gid);
                     self.remove_gid_from_tree(gid);
@@ -155,12 +123,6 @@ impl DesManager {
                 }
             }
             DesToProxy::ReleaseAuthority(gid) => {
-                if !self.has_authority(gid, source) {
-                    debug!(
-                        "Ignoring DES authority release for {gid:?} from non-authority {source}"
-                    );
-                    return;
-                }
                 self.authority.remove(&gid);
                 self.add_gid_to_tree(gid);
             }
@@ -200,12 +162,6 @@ impl DesManager {
                 }
             }
             DesToProxy::TransferAuthorityTo(gid, peer_id) => {
-                if !self.has_authority(gid, source) {
-                    debug!(
-                        "Ignoring DES authority transfer for {gid:?} from non-authority {source}"
-                    );
-                    return;
-                }
                 if let Some(entity) = self.entity_storage.entities.get(&gid).cloned() {
                     //info!("Transferring authority over entity from {source:?} to {peer_id:?}");
                     self.authority.insert(gid, peer_id.into());

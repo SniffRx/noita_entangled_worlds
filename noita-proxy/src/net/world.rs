@@ -872,15 +872,8 @@ impl WorldManager {
                     //warn!("Can't listen for {chunk:?} - not an authority");
                     return;
                 };
-                let chunk_data = self.outbound_model.get_chunk_data(chunk);
-                if chunk_data.is_none() {
-                    self.emit_msg(
-                        Destination::Peer(source),
-                        WorldNetMessage::UnloadChunk { chunk },
-                    );
-                    return;
-                }
                 listeners.insert(source);
+                let chunk_data = self.outbound_model.get_chunk_data(chunk);
                 let priority = *priority;
                 self.emit_msg(
                     Destination::Peer(source),
@@ -905,20 +898,19 @@ impl WorldManager {
                 chunk_data,
                 priority,
             } => {
+                self.chunk_state.insert(
+                    chunk,
+                    ChunkState::Listening {
+                        authority: source,
+                        priority,
+                    },
+                );
                 if let Some(chunk_data) = chunk_data {
-                    self.chunk_state.insert(
-                        chunk,
-                        ChunkState::Listening {
-                            authority: source,
-                            priority,
-                        },
-                    );
                     self.inbound_model.apply_chunk_data(chunk, &chunk_data);
                 } else {
                     warn!(
                         "Initial listen response has None chunk_data. It's generally supposed to have some."
                     );
-                    self.chunk_state.insert(chunk, ChunkState::UnloadPending);
                 }
             }
             WorldNetMessage::ListenUpdate {

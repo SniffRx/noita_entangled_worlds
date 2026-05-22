@@ -36,7 +36,7 @@ use crate::{
     AudioSettings, DefaultSettings, GameMode, GameSettings, LocalHealthMode,
     bookkeeping::save_state::{SaveState, SaveStateEntry},
 };
-use shared::des::{DesToProxy, ProxyToDes, RemoteDes, UpdateOrUpload};
+use shared::des::ProxyToDes;
 use shared::world_sync::{ChunkCoord, Pixel, PixelFlags, ProxyToWorldSync};
 use tangled::Reliability;
 use tracing::{error, info, warn};
@@ -60,35 +60,6 @@ pub fn ws_encode_proxy_bin(key: u8, data: &[u8]) -> NoitaInbound {
     buf.push(key);
     buf.extend(data);
     NoitaInbound::RawMessage(buf)
-}
-
-fn des_to_proxy_reliability(msg: &DesToProxy) -> Reliability {
-    match msg {
-        DesToProxy::UpdatePosition(UpdateOrUpload::Update(_)) => Reliability::Unreliable,
-        DesToProxy::UpdatePositions(updates)
-            if updates
-                .iter()
-                .all(|update| matches!(update, UpdateOrUpload::Update(_))) =>
-        {
-            Reliability::Unreliable
-        }
-        _ => Reliability::Reliable,
-    }
-}
-
-fn remote_message_reliability(requested_reliable: bool, message: &RemoteMessage) -> Reliability {
-    match message {
-        RemoteMessage::RemoteDes(RemoteDes::EntityUpdate(_) | RemoteDes::CameraPos(_)) => {
-            Reliability::Unreliable
-        }
-        _ => Reliability::from_reliability_bool(requested_reliable),
-    }
-}
-
-fn split_des_updates(updates: Vec<UpdateOrUpload>) -> (Vec<UpdateOrUpload>, Vec<UpdateOrUpload>) {
-    updates
-        .into_iter()
-        .partition(|update| matches!(update, UpdateOrUpload::Update(_)))
 }
 
 pub(crate) fn ws_encode_mod(peer: OmniPeerId, data: &[u8]) -> NoitaInbound {
@@ -618,9 +589,9 @@ impl NetManager {
                         audio.global_input_volume,
                     );
                     if audio.loopback {
-                        self.send(self.peer.my_id(), &data, Reliability::Unreliable)
+                        self.send(self.peer.my_id(), &data, Reliability::Reliable)
                     }
-                    self.broadcast(&data, Reliability::Unreliable);
+                    self.broadcast(&data, Reliability::Reliable);
                 }
             }
             let mut map = FxHashMap::default();
@@ -640,7 +611,7 @@ impl NetManager {
                 }
                 if !self.no_chunkmap_to_players.load(Ordering::Relaxed) && !map.is_empty() {
                     let data = NetMsg::MapData(map);
-                    self.broadcast(&data, Reliability::Unreliable)
+                    self.broadcast(&data, Reliability::Reliable)
                 }
             }
             // Don't do excessive busy-waiting;
@@ -1035,16 +1006,12 @@ impl NetManager {
                             .no_material_damage
                             .unwrap_or(def.no_material_damage),
                     );
-                    let health_on_revive = settings
-                        .health_lost_on_revive
-                        .unwrap_or(def.health_lost_on_revive);
-                    let respawn_hp_percent = if health_on_revive == 0 {
-                        def.health_lost_on_revive
-                    } else {
-                        health_on_revive
-                    };
-                    state.try_ws_write_option("health_lost_on_revive", respawn_hp_percent);
-                    state.try_ws_write_option("respawn_hp_percent", respawn_hp_percent);
+                    state.try_ws_write_option(
+                        "health_lost_on_revive",
+                        settings
+                            .health_lost_on_revive
+                            .unwrap_or(def.health_lost_on_revive),
+                    );
                 }
                 LocalHealthMode::PermaDeath => state.try_ws_write_option("perma_death", true),
                 LocalHealthMode::Alternate => state.try_ws_write_option("no_notplayer", true),
@@ -1161,26 +1128,6 @@ impl NetManager {
     ) {
         match msg {
             NoitaOutbound::Raw(raw_msg) => {
-                if raw_msg.is_empty() {
-                    error!("Empty raw message from mod");
-                    return;
-                }
-                if raw_msg[0] & 8 > 0 {
-                    let msg_to_send = NetMsg::ModRaw {
-                        data: raw_msg[1..].to_owned(),
-                    };
-                    let reliable = raw_msg[0] & 4 > 0;
-                    self.send(
-                        self.peer.host_id(),
-                        &msg_to_send,
-                        if reliable {
-                            Reliability::Reliable
-                        } else {
-                            Reliability::Unreliable
-                        },
-                    );
-                    return;
-                }
                 match raw_msg[0] & 0b11 {
                     // Message to proxy
                     1 => {
@@ -1215,37 +1162,11 @@ impl NetManager {
                 if self.is_host() {
                     state.des.handle_noita_msg(self.peer.my_id(), des_to_proxy)
                 } else {
-                    match des_to_proxy {
-                        DesToProxy::UpdatePositions(updates) => {
-                            let (transient_updates, reliable_updates) = split_des_updates(updates);
-                            if !transient_updates.is_empty() {
-                                self.send(
-                                    self.peer.host_id(),
-                                    &NetMsg::ForwardDesToProxy(DesToProxy::UpdatePositions(
-                                        transient_updates,
-                                    )),
-                                    Reliability::Unreliable,
-                                );
-                            }
-                            if !reliable_updates.is_empty() {
-                                self.send(
-                                    self.peer.host_id(),
-                                    &NetMsg::ForwardDesToProxy(DesToProxy::UpdatePositions(
-                                        reliable_updates,
-                                    )),
-                                    Reliability::Reliable,
-                                );
-                            }
-                        }
-                        des_to_proxy => {
-                            let reliability = des_to_proxy_reliability(&des_to_proxy);
-                            self.send(
-                                self.peer.host_id(),
-                                &NetMsg::ForwardDesToProxy(des_to_proxy),
-                                reliability,
-                            );
-                        }
-                    }
+                    self.send(
+                        self.peer.host_id(),
+                        &NetMsg::ForwardDesToProxy(des_to_proxy),
+                        Reliability::Reliable,
+                    );
                 }
             }
             NoitaOutbound::WorldSyncToProxy(world_sync_msg) => state
@@ -1257,7 +1178,7 @@ impl NetManager {
                 message,
             } => {
                 let destination = destination.convert::<OmniPeerId>();
-                let reliability = remote_message_reliability(reliable, &message);
+                let reliability = Reliability::from_reliability_bool(reliable);
                 match destination {
                     Destination::Peers(peers) => {
                         if !peers.is_empty() {
@@ -1353,11 +1274,11 @@ impl NetManager {
                 if let (Some(x), Some(y)) = (x, y) {
                     self.player_pos.0.store(x, Ordering::Relaxed);
                     self.player_pos.1.store(y, Ordering::Relaxed);
-                    self.broadcast(&NetMsg::PlayerPosition(x, y, b, d), Reliability::Unreliable);
+                    self.broadcast(&NetMsg::PlayerPosition(x, y, b, d), Reliability::Reliable);
                     self.send(
                         self.peer.my_id(),
                         &NetMsg::PlayerPosition(x, y, b, d),
-                        Reliability::Unreliable,
+                        Reliability::Reliable,
                     );
                 }
                 let x: Option<u8> = msg.next().and_then(|s| s.parse().ok());

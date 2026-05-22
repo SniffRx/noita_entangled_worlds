@@ -121,17 +121,11 @@ fn entity_is_excluded(entity: EntityID) -> eyre::Result<bool> {
     let good = "data/entities/items/wands/wand_good/wand_good_";
     let filename = entity.filename()?;
     let tags = format!(",{},", entity.tags()?);
-    let is_shop_item = entity
-        .try_get_first_component::<ItemCostComponent>(None)?
-        .is_some_and(|cost| cost.cost().unwrap_or(0) > 0);
     Ok(tags.contains(",ew_no_enemy_sync,")
         || tags.contains(",polymorphed_player,")
         || tags.contains(",gold_nugget,")
         || tags.contains(",nightmare_starting_wand,")
         || ENTITY_EXCLUDES.contains(filename.as_ref())
-        || is_shop_item
-        || filename.starts_with("data/entities/items/pickup/potion")
-        || filename.starts_with("data/entities/items/pickup/powder_stash")
         || filename.starts_with(good)
         || tags.contains(",player_unit,")
         || filename == "data/entities/items/pickup/greed_curse.xml"
@@ -479,29 +473,13 @@ impl EntitySync {
 
     pub(crate) fn cross_item_thrown(&mut self, entity: Option<EntityID>) -> eyre::Result<()> {
         let entity = entity.ok_or_eyre("Passed entity 0 into cross call")?;
-
-        if !entity.is_alive() {
-            return Ok(());
-        }
-
-        // It might be already tracked in case of tablet telekinesis,
-        // no need to track it again.
+        // It might be already tracked in case of tablet telekinesis, no need to track it again.
         if !self.local_diff_model.is_entity_tracked(entity) {
             self.local_diff_model
                 .track_and_upload_entity(entity, &mut self.entity_manager)?;
         }
-
         Ok(())
     }
-    // pub(crate) fn cross_item_thrown(&mut self, entity: Option<EntityID>) -> eyre::Result<()> {
-    //     let entity = entity.ok_or_eyre("Passed entity 0 into cross call")?;
-    //     // It might be already tracked in case of tablet telekinesis, no need to track it again.
-    //     if !self.local_diff_model.is_entity_tracked(entity) {
-    //         self.local_diff_model
-    //             .track_and_upload_entity(entity, &mut self.entity_manager)?;
-    //     }
-    //     Ok(())
-    // }
 
     pub(crate) fn cross_death_notify(
         &mut self,

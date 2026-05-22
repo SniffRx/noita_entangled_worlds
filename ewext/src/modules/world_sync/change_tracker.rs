@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use noita_api::noita::types::{GridWorld, Vec2i};
+use noita_api::{
+    noita::types::{GridWorld, Vec2i},
+    raw::game_create_sprite_for_x_frames,
+};
 use shared::world_sync::{CHUNKLET_SIZE_POWER, ChunkCoord};
 
 pub(crate) struct ChangeTracker {
@@ -63,22 +66,22 @@ impl ChangeTracker {
         }
 
         let limit = 2048 * 4;
-        // for (changed, amount) in &self.changed {
-        //     if *amount >= limit {
-        //         // print!("amount: {}", amount);
-        //         game_create_sprite_for_x_frames(
-        //             "mods/quant.ew/files/resource/debug/marker.png".into(),
-        //             (changed.0 << CHUNKLET_SIZE_POWER) as f64,
-        //             (changed.1 << CHUNKLET_SIZE_POWER) as f64,
-        //             Some(false),
-        //             Some(0.0),
-        //             Some(0.0),
-        //             Some(2),
-        //             Some(true),
-        //         )
-        //         .unwrap();
-        //     }
-        // }
+        for (changed, amount) in &self.changed {
+            if *amount >= limit {
+                // print!("amount: {}", amount);
+                game_create_sprite_for_x_frames(
+                    "mods/quant.ew/files/resource/debug/marker.png".into(),
+                    (changed.0 << CHUNKLET_SIZE_POWER) as f64,
+                    (changed.1 << CHUNKLET_SIZE_POWER) as f64,
+                    Some(false),
+                    Some(0.0),
+                    Some(0.0),
+                    Some(2),
+                    Some(true),
+                )
+                .unwrap();
+            }
+        }
         let should_update = self
             .changed
             .iter()

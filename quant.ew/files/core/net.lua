@@ -164,14 +164,12 @@ local function handle_message(msg)
 end
 
 function net.update()
-    local messages = 0
-    while messages < 256 do
+    while true do
         local msg = ewext.netmanager_recv()
         if msg == nil then
             break
         end
         handle_message(msg)
-        messages = messages + 1
     end
     ewext.netmanager_flush()
 end
@@ -189,8 +187,6 @@ end
 
 local DEST_PROXY = 1
 local DEST_BROADCAST = 2
-local DEST_PROXY_BIN = 3
-local DEST_HOST = 8
 local DEST_FLAGS = 0
 local MOD_RELIABLE = 4 -- 0b101
 
@@ -223,11 +219,7 @@ function net.estimate_rpc_size(message)
 end
 
 function net.send_to_host(key, value, reliable)
-    local encoded_msg = bitser.dumps({
-        key = key,
-        value = value,
-    })
-    net.send_internal(encoded_msg, DEST_HOST, reliable)
+    net.send(key, value, reliable) -- TODO actually only send to host
 end
 
 function net.proxy_send(key, value)

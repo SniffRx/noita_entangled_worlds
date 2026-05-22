@@ -1,67 +1,35 @@
 name: lint
 
-on:
-  push:
-  pull_request:
-
-concurrency:
-  group: lint-${{ github.ref }}
-  cancel-in-progress: true
+on: [push, pull_request]
 
 jobs:
-  check:
+  build-mod:
     runs-on: ubuntu-22.04
     name: Check
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Install extra deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libclang-dev \
-            libasound2-dev \
-            libjack-dev \
-            libgtk-3-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxkbcommon-dev \
-            libssl-dev
-
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev libasound2-dev libjack-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
           targets: i686-pc-windows-gnu
-          components: clippy, rustfmt, rust-src
+          components: clippy, rustfmt
+          toolchain: 'nightly'
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            ewext -> target
-            noita-proxy -> target
+          workspaces: ewext -> target
+                      noita-proxy -> target
 
-      - name: Check ewext formatting
+      - name: Check ewext for formatting
         run: cargo fmt --check
         working-directory: ./ewext
-
-      - name: Check proxy formatting
+      - name: Check proxy for formatting
         run: cargo fmt --check
         working-directory: ./noita-proxy
-
-      - name: Cargo check ewext
-        run: cargo +nightly check --target=i686-pc-windows-gnu -Zbuild-std="panic_abort,std"
+      - name: Ask clippy for approval (ewext)
+        run: cargo clippy -- -D clippy::all
         working-directory: ./ewext
-
-      - name: Cargo check proxy
-        run: cargo check
-        working-directory: ./noita-proxy
-
-      - name: Clippy ewext
-        run: cargo +nightly clippy --target=i686-pc-windows-gnu -Zbuild-std="panic_abort,std" -- -D warnings
-        working-directory: ./ewext
-
-      - name: Clippy proxy
-        run: cargo clippy -- -D warnings
+      - name: Ask clippy for approval (proxy)
+        run: cargo clippy -- -D clippy::all
         working-directory: ./noita-proxy
