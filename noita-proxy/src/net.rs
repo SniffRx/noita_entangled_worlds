@@ -301,41 +301,18 @@ impl NetManager {
         if peer == self.peer.my_id() {
             // Shortcut for sending stuff to myself
             let _ = self.loopback_channel.0.send(msg.clone());
-            return;
-        }
-
-        let encoded = lz4_flex::compress_prepend_size(&bitcode::encode(msg));
-        let len = encoded.len();
-
-        const MAX_UNRELIABLE_MESSAGE_LEN: usize = 8 * 1024;
-
-        if len > MAX_UNRELIABLE_MESSAGE_LEN {
-            if cfg!(debug_assertions) {
-                warn!(
-                    "Dropping too large message of len {} with reliability {:?}: {:?}",
-                    len, reliability, msg
-                );
-            } else {
-                warn!(
-                    "Dropping too large message of len {} with reliability {:?}",
-                    len, reliability
-                );
-            }
-
-            return;
-        }
-
-        if let Err(err) = self.peer.send(peer, encoded, reliability) {
-            if cfg!(debug_assertions) {
-                warn!(
-                    "Error while sending message of len {} with reliability {:?}: {} {:?}",
-                    len, reliability, err, msg
-                );
-            } else {
-                warn!(
-                    "Error while sending message of len {} with reliability {:?}: {}",
-                    len, reliability, err
-                );
+        } else {
+            let encoded = lz4_flex::compress_prepend_size(&bitcode::encode(msg));
+            let len = encoded.len();
+            if let Err(err) = self.peer.send(peer, encoded.clone(), reliability) {
+                if cfg!(debug_assertions) {
+                    warn!(
+                        "Error while sending message of len {}: {} {:?}",
+                        len, err, msg
+                    )
+                } else {
+                    warn!("Error while sending message of len {}: {}", len, err)
+                }
             }
         }
     }
