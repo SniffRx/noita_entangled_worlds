@@ -171,7 +171,7 @@ impl Module for WorldSync {
             return Ok(());
         };
         let (x, y) = (ent.transform.pos.x, ent.transform.pos.y);
-        let tracked_radius = 2;
+        let tracked_radius = 1;
         let tracked_square = tracked_radius * 2 + 1;
         let mut tracked_chunks = (0..tracked_square * tracked_square)
             .into_iter()
@@ -218,28 +218,38 @@ impl Module for WorldSync {
         .copied()
         .collect::<Vec<_>>();
 
-        let updates = should_update
-            .into_par_iter()
-            .filter_map(|chunk_pos| {
-                let mut update = NoitaWorldUpdate {
-                    coord: chunk_pos,
-                    pixels: std::array::from_fn(|_| Pixel::default()),
-                };
-                if unsafe {
-                    self.particle_world_state
-                        .assume_init_ref()
-                        .encode_world(&mut update)
-                }
-                .is_ok()
-                {
-                    Some(update)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
+        let mut updates = should_update
+        .into_par_iter()
+        .filter_map(|chunk_pos| {
+            let mut update = NoitaWorldUpdate {
+                coord: chunk_pos,
+                pixels: std::array::from_fn(|_| Pixel::default()),
+            };
+
+            if unsafe {
+                self.particle_world_state
+                    .assume_init_ref()
+                    .encode_world(&mut update)
+            }
+            .is_ok()
+            {
+                Some(update)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    const MAX_WORLD_UPDATES_PER_FRAME: usize = 2;
+
+    if updates.len() > MAX_WORLD_UPDATES_PER_FRAME {
+        updates.truncate(MAX_WORLD_UPDATES_PER_FRAME);
+    }
+
+    if !updates.is_empty() {
         let msg = NoitaOutbound::WorldSyncToProxy(WorldSyncToProxy::Updates(updates));
         ctx.net.send(&msg)?;
+    }
         let Vec2 { x: cx, y: cy } = ctx.globals.game_global.m_game_world.camera_center();
 
         let ix = x as i32;

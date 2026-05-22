@@ -97,7 +97,7 @@ impl Default for EntitySync {
         Self {
             look_current_entity: EntityID::try_from(1).unwrap(),
 
-            interest_tracker: InterestTracker::new(512.0),
+            interest_tracker: InterestTracker::new(384.0),
             local_diff_model: LocalDiffModel::default(),
             remote_models: Default::default(),
 
@@ -477,15 +477,29 @@ impl EntitySync {
         Ok(())
     }
 
-    pub(crate) fn cross_item_thrown(&mut self, entity: Option<EntityID>) -> eyre::Result<()> {
-        let entity = entity.ok_or_eyre("Passed entity 0 into cross call")?;
-        // It might be already tracked in case of tablet telekinesis, no need to track it again.
-        if !self.local_diff_model.is_entity_tracked(entity) {
-            self.local_diff_model
-                .track_and_upload_entity(entity, &mut self.entity_manager)?;
+    pub(crate) fn cross_item_thrown(&mut self, net: &mut NetManager, entity: Option<EntityID>) -> eyre::Result<()> {
+        let Some(entity) = entity else {
+            return Ok(());
+        };
+
+        if !entity.is_alive() {
+            return Ok(());
         }
+
+        self.local_diff_model
+            .track_and_upload_entity(net, entity, Gid(rand::random()))?;
+
         Ok(())
     }
+    // pub(crate) fn cross_item_thrown(&mut self, entity: Option<EntityID>) -> eyre::Result<()> {
+    //     let entity = entity.ok_or_eyre("Passed entity 0 into cross call")?;
+    //     // It might be already tracked in case of tablet telekinesis, no need to track it again.
+    //     if !self.local_diff_model.is_entity_tracked(entity) {
+    //         self.local_diff_model
+    //             .track_and_upload_entity(entity, &mut self.entity_manager)?;
+    //     }
+    //     Ok(())
+    // }
 
     pub(crate) fn cross_death_notify(
         &mut self,
@@ -621,7 +635,7 @@ impl Module for EntitySync {
         if frame_num < 10 {
             return Ok(());
         }
-        if frame_num % 5 == 0 {
+        if frame_num % 4 == 0 {
             send_remotedes(
                 ctx.net,
                 false,
@@ -629,7 +643,7 @@ impl Module for EntitySync {
                 RemoteDes::InterestRequest(InterestRequest { pos }),
             )?;
         }
-        if frame_num % 5 == 1 {
+        if frame_num % 4 == 1 {
             send_remotedes(
                 ctx.net,
                 false,
