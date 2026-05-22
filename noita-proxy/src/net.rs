@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::{
+    cmp::Reverse,
     env,
     fmt::Display,
     io::{self},
@@ -89,6 +90,121 @@ fn split_des_updates(updates: Vec<UpdateOrUpload>) -> (Vec<UpdateOrUpload>, Vec<
     updates
         .into_iter()
         .partition(|update| matches!(update, UpdateOrUpload::Update(_)))
+}
+
+#[derive(Default)]
+struct NetMsgStats {
+    count: u64,
+    compressed_bytes: u64,
+    uncompressed_bytes: u64,
+    errors: u64,
+    max_compressed_len: usize,
+    max_items: usize,
+}
+
+#[derive(Default)]
+struct NetSendStats {
+    last_log: Option<Instant>,
+    direct_count: u64,
+    broadcast_count: u64,
+    reliable_count: u64,
+    unreliable_count: u64,
+    error_count: u64,
+    last_error: Option<String>,
+    by_kind: FxHashMap<&'static str, NetMsgStats>,
+}
+
+fn net_msg_kind(msg: &NetMsg) -> &'static str {
+    match msg {
+        NetMsg::Welcome => "Welcome",
+        NetMsg::RequestMods => "RequestMods",
+        NetMsg::Mods { .. } => "Mods",
+        NetMsg::EndRun => "EndRun",
+        NetMsg::Kick => "Kick",
+        NetMsg::PeerDisconnected { .. } => "PeerDisconnected",
+        NetMsg::StartGame { .. } => "StartGame",
+        NetMsg::ModRaw { .. } => "ModRaw",
+        NetMsg::ModCompressed { .. } => "ModCompressed",
+        NetMsg::WorldMessage(msg) => match msg {
+            world::WorldNetMessage::ChunkPacket { .. } => "World::ChunkPacket",
+            world::WorldNetMessage::ListenUpdate { .. } => "World::ListenUpdate",
+            world::WorldNetMessage::ListenInitialResponse { .. } => "World::ListenInitialResponse",
+            world::WorldNetMessage::UpdateStorage { .. } => "World::UpdateStorage",
+            world::WorldNetMessage::GotAuthority { .. } => "World::GotAuthority",
+            _ => "World::Other",
+        },
+        NetMsg::PlayerColor(..) => "PlayerColor",
+        NetMsg::RemoteMsg(message) => remote_message_kind(message),
+        NetMsg::ForwardDesToProxy(msg) => des_to_proxy_kind(msg),
+        NetMsg::ForwardProxyToDes(msg) => proxy_to_des_kind(msg),
+        NetMsg::ForwardProxyToWorldSync(_) => "ForwardProxyToWorldSync",
+        NetMsg::NoitaDisconnected => "NoitaDisconnected",
+        NetMsg::Flags(_) => "Flags",
+        NetMsg::RespondFlagNormal(..) => "RespondFlagNormal",
+        NetMsg::RespondFlagSlow(..) => "RespondFlagSlow",
+        NetMsg::RespondFlagMoon(..) => "RespondFlagMoon",
+        NetMsg::PlayerPosition(..) => "PlayerPosition",
+        NetMsg::RespondFlagStevari(..) => "RespondFlagStevari",
+        NetMsg::AudioData(..) => "AudioData",
+        NetMsg::MapData(_) => "MapData",
+        NetMsg::MatData(_) => "MatData",
+    }
+}
+
+fn remote_message_kind(message: &RemoteMessage) -> &'static str {
+    match message {
+        RemoteMessage::RemoteDes(remote_des) => match remote_des {
+            RemoteDes::EntityUpdate(_) => "RemoteDes::EntityUpdate",
+            RemoteDes::EntityInit(_) => "RemoteDes::EntityInit",
+            RemoteDes::Projectiles(_) => "RemoteDes::Projectiles",
+            RemoteDes::InterestRequest(_) => "RemoteDes::InterestRequest",
+            RemoteDes::CameraPos(_) => "RemoteDes::CameraPos",
+            RemoteDes::DeadEntities(_) => "RemoteDes::DeadEntities",
+            RemoteDes::SpawnOnce(..) => "RemoteDes::SpawnOnce",
+            RemoteDes::Reset => "RemoteDes::Reset",
+            _ => "RemoteDes::Other",
+        },
+    }
+}
+
+fn des_to_proxy_kind(msg: &DesToProxy) -> &'static str {
+    match msg {
+        DesToProxy::UpdatePosition(UpdateOrUpload::Update(_)) => "DesToProxy::UpdatePosition",
+        DesToProxy::UpdatePosition(UpdateOrUpload::Upload(_)) => "DesToProxy::UploadPosition",
+        DesToProxy::UpdatePositions(_) => "DesToProxy::UpdatePositions",
+        DesToProxy::DeleteEntity(..) => "DesToProxy::DeleteEntity",
+        DesToProxy::RequestAuthority { .. } => "DesToProxy::RequestAuthority",
+        DesToProxy::ReleaseAuthority(_) => "DesToProxy::ReleaseAuthority",
+        DesToProxy::TransferAuthorityTo(..) => "DesToProxy::TransferAuthorityTo",
+        DesToProxy::UpdateWand(..) => "DesToProxy::UpdateWand",
+    }
+}
+
+fn proxy_to_des_kind(msg: &ProxyToDes) -> &'static str {
+    match msg {
+        ProxyToDes::GotAuthority(_) => "ProxyToDes::GotAuthority",
+        ProxyToDes::GotAuthoritys(_) => "ProxyToDes::GotAuthoritys",
+        ProxyToDes::RemoveEntities(_) => "ProxyToDes::RemoveEntities",
+        ProxyToDes::DeleteEntity(_) => "ProxyToDes::DeleteEntity",
+    }
+}
+
+fn net_msg_item_count(msg: &NetMsg) -> usize {
+    match msg {
+        NetMsg::WorldMessage(world::WorldNetMessage::ChunkPacket { chunkpacket }) => {
+            chunkpacket.len()
+        }
+        NetMsg::RemoteMsg(RemoteMessage::RemoteDes(RemoteDes::EntityUpdate(diff))) => diff.len(),
+        NetMsg::RemoteMsg(RemoteMessage::RemoteDes(RemoteDes::EntityInit(diff))) => diff.len(),
+        NetMsg::RemoteMsg(RemoteMessage::RemoteDes(RemoteDes::Projectiles(projectiles))) => {
+            projectiles.len()
+        }
+        NetMsg::ForwardDesToProxy(DesToProxy::UpdatePositions(updates)) => updates.len(),
+        NetMsg::ForwardProxyToDes(ProxyToDes::GotAuthoritys(updates)) => updates.len(),
+        NetMsg::MapData(map) => map.len(),
+        NetMsg::MatData(colors) => colors.len(),
+        _ => 1,
+    }
 }
 
 pub(crate) fn ws_encode_mod(peer: OmniPeerId, data: &[u8]) -> NoitaInbound {
@@ -242,6 +358,7 @@ pub struct NetManager {
     pub players_sprite: Mutex<FxHashMap<OmniPeerId, (Option<WorldPos>, bool, bool, RgbaImage)>>,
     pub reset_map: AtomicBool,
     colors: Mutex<FxHashMap<u16, u32>>,
+    net_send_stats: Mutex<NetSendStats>,
 }
 
 impl NetManager {
@@ -284,6 +401,7 @@ impl NetManager {
             no_chunkmap_to_players: AtomicBool::new(true),
             no_chunkmap: AtomicBool::new(true),
             colors: Default::default(),
+            net_send_stats: Default::default(),
         }
         .into()
     }
@@ -297,54 +415,135 @@ impl NetManager {
         }
     }
 
+    fn record_net_send(
+        &self,
+        msg: &NetMsg,
+        reliability: Reliability,
+        compressed_len: usize,
+        uncompressed_len: usize,
+        is_broadcast: bool,
+        error: Option<&dyn Display>,
+    ) {
+        let kind = net_msg_kind(msg);
+        let item_count = net_msg_item_count(msg);
+        let now = Instant::now();
+        let mut stats = self.net_send_stats.lock().unwrap();
+        if stats.last_log.is_none() {
+            stats.last_log = Some(now);
+        }
+
+        if is_broadcast {
+            stats.broadcast_count += 1;
+        } else {
+            stats.direct_count += 1;
+        }
+        match reliability {
+            Reliability::Reliable => stats.reliable_count += 1,
+            Reliability::Unreliable => stats.unreliable_count += 1,
+        }
+        if let Some(error) = error {
+            stats.error_count += 1;
+            stats.last_error = Some(error.to_string());
+        }
+
+        let entry = stats.by_kind.entry(kind).or_default();
+        entry.count += 1;
+        entry.compressed_bytes += compressed_len as u64;
+        entry.uncompressed_bytes += uncompressed_len as u64;
+        entry.max_compressed_len = entry.max_compressed_len.max(compressed_len);
+        entry.max_items = entry.max_items.max(item_count);
+        if error.is_some() {
+            entry.errors += 1;
+        }
+
+        let Some(last_log) = stats.last_log else {
+            return;
+        };
+        if now.duration_since(last_log) < Duration::from_secs(2) {
+            return;
+        }
+
+        let elapsed = now.duration_since(last_log).as_secs_f64().max(0.001);
+        let total_compressed: u64 = stats
+            .by_kind
+            .values()
+            .map(|entry| entry.compressed_bytes)
+            .sum();
+        let total_count: u64 = stats.by_kind.values().map(|entry| entry.count).sum();
+        let mut top = stats.by_kind.iter().collect::<Vec<_>>();
+        top.sort_by_key(|(_, entry)| Reverse(entry.compressed_bytes));
+        let top = top
+            .into_iter()
+            .take(4)
+            .map(|(kind, entry)| {
+                format!(
+                    "{}: {} msg, {:.1} KiB, max {} B, items {}, err {}",
+                    kind,
+                    entry.count,
+                    entry.compressed_bytes as f64 / 1024.0,
+                    entry.max_compressed_len,
+                    entry.max_items,
+                    entry.errors
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        let last_error = stats.last_error.as_deref().unwrap_or("none");
+        info!(
+            "Net send stats: {:.1} msg/s, {:.1} KiB/s, direct={}, broadcast={}, reliable={}, unreliable={}, errors={}, last_error={}, top=[{}]",
+            total_count as f64 / elapsed,
+            total_compressed as f64 / 1024.0 / elapsed,
+            stats.direct_count,
+            stats.broadcast_count,
+            stats.reliable_count,
+            stats.unreliable_count,
+            stats.error_count,
+            last_error,
+            top
+        );
+
+        *stats = NetSendStats {
+            last_log: Some(now),
+            ..Default::default()
+        };
+    }
+
     pub(crate) fn send(&self, peer: OmniPeerId, msg: &NetMsg, reliability: Reliability) {
         if peer == self.peer.my_id() {
             // Shortcut for sending stuff to myself
             let _ = self.loopback_channel.0.send(msg.clone());
-            return;
-        }
-
-        let encoded = lz4_flex::compress_prepend_size(&bitcode::encode(msg));
-        let len = encoded.len();
-
-        const MAX_UNRELIABLE_MESSAGE_LEN: usize = 8 * 1024;
-
-        if len > MAX_UNRELIABLE_MESSAGE_LEN {
-            if cfg!(debug_assertions) {
-                warn!(
-                    "Dropping too large message of len {} with reliability {:?}: {:?}",
-                    len, reliability, msg
-                );
+        } else {
+            let uncompressed = bitcode::encode(msg);
+            let uncompressed_len = uncompressed.len();
+            let encoded = lz4_flex::compress_prepend_size(&uncompressed);
+            let len = encoded.len();
+            if let Err(err) = self.peer.send(peer, encoded, reliability) {
+                self.record_net_send(msg, reliability, len, uncompressed_len, false, Some(&err));
+                if cfg!(debug_assertions) {
+                    warn!(
+                        "Error while sending message of len {}: {} {:?}",
+                        len, err, msg
+                    )
+                } else {
+                    warn!("Error while sending message of len {}: {}", len, err)
+                }
             } else {
-                warn!(
-                    "Dropping too large message of len {} with reliability {:?}",
-                    len, reliability
-                );
-            }
-
-            return;
-        }
-
-        if let Err(err) = self.peer.send(peer, encoded, reliability) {
-            if cfg!(debug_assertions) {
-                warn!(
-                    "Error while sending message of len {} with reliability {:?}: {} {:?}",
-                    len, reliability, err, msg
-                );
-            } else {
-                warn!(
-                    "Error while sending message of len {} with reliability {:?}: {}",
-                    len, reliability, err
-                );
+                self.record_net_send(msg, reliability, len, uncompressed_len, false, None);
             }
         }
     }
 
     pub(crate) fn broadcast(&self, msg: &NetMsg, reliability: Reliability) {
-        let encoded = lz4_flex::compress_prepend_size(&bitcode::encode(msg));
+        let uncompressed = bitcode::encode(msg);
+        let uncompressed_len = uncompressed.len();
+        let encoded = lz4_flex::compress_prepend_size(&uncompressed);
         let len = encoded.len();
         if let Err(err) = self.peer.broadcast(encoded, reliability) {
+            self.record_net_send(msg, reliability, len, uncompressed_len, true, Some(&err));
             warn!("Error while broadcasting message of len {}: {}", len, err)
+        } else {
+            self.record_net_send(msg, reliability, len, uncompressed_len, true, None);
         }
     }
 

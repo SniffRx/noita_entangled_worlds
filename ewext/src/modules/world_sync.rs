@@ -103,25 +103,19 @@ where
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let Some(a_element) = self.a.peek() else {
-                return self.b.next();
-            };
-            let Some(b_element) = self.b.peek() else {
-                return self.a.next();
-            };
-            match a_element.cmp(b_element) {
-                std::cmp::Ordering::Less => {
-                    return self.a.next();
-                }
-                std::cmp::Ordering::Equal => {
-                    self.a.next();
-                    return self.b.next();
-                }
-                std::cmp::Ordering::Greater => {
-                    return self.b.next();
-                }
+        let Some(a_element) = self.a.peek() else {
+            return self.b.next();
+        };
+        let Some(b_element) = self.b.peek() else {
+            return self.a.next();
+        };
+        match a_element.cmp(b_element) {
+            std::cmp::Ordering::Less => self.a.next(),
+            std::cmp::Ordering::Equal => {
+                self.a.next();
+                self.b.next()
             }
+            std::cmp::Ordering::Greater => self.b.next(),
         }
     }
 }
@@ -171,10 +165,9 @@ impl Module for WorldSync {
             return Ok(());
         };
         let (x, y) = (ent.transform.pos.x, ent.transform.pos.y);
-        let tracked_radius = 1;
+        let tracked_radius = 2;
         let tracked_square = tracked_radius * 2 + 1;
         let mut tracked_chunks = (0..tracked_square * tracked_square)
-            .into_iter()
             .filter_map(|i| {
                 let dx = i % tracked_square;
                 let dy = i / tracked_square;
@@ -218,38 +211,34 @@ impl Module for WorldSync {
         .copied()
         .collect::<Vec<_>>();
 
-        let mut updates = should_update
-        .into_par_iter()
-        .filter_map(|chunk_pos| {
-            let mut update = NoitaWorldUpdate {
-                coord: chunk_pos,
-                pixels: std::array::from_fn(|_| Pixel::default()),
-            };
-
-            if unsafe {
-                self.particle_world_state
-                    .assume_init_ref()
-                    .encode_world(&mut update)
+        let updates = should_update
+            .into_par_iter()
+            .filter_map(|chunk_pos| {
+                let mut update = NoitaWorldUpdate {
+                    coord: chunk_pos,
+                    pixels: std::array::from_fn(|_| Pixel::default()),
+                };
+                if unsafe {
+                    self.particle_world_state
+                        .assume_init_ref()
+                        .encode_world(&mut update)
+                }
+                .is_ok()
+                {
+                    Some(update)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        const MAX_WORLD_UPDATES_PER_MESSAGE: usize = 2;
+        for updates in updates.chunks(MAX_WORLD_UPDATES_PER_MESSAGE) {
+            if updates.is_empty() {
+                continue;
             }
-            .is_ok()
-            {
-                Some(update)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-
-    const MAX_WORLD_UPDATES_PER_FRAME: usize = 2;
-
-    if updates.len() > MAX_WORLD_UPDATES_PER_FRAME {
-        updates.truncate(MAX_WORLD_UPDATES_PER_FRAME);
-    }
-
-    if !updates.is_empty() {
-        let msg = NoitaOutbound::WorldSyncToProxy(WorldSyncToProxy::Updates(updates));
-        ctx.net.send(&msg)?;
-    }
+            let msg = NoitaOutbound::WorldSyncToProxy(WorldSyncToProxy::Updates(updates.to_vec()));
+            ctx.net.send(&msg)?;
+        }
         let Vec2 { x: cx, y: cy } = ctx.globals.game_global.m_game_world.camera_center();
 
         let ix = x as i32;
