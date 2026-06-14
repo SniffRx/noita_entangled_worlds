@@ -278,6 +278,31 @@ impl WorldSync {
     }
 }
 pub const SCALE: isize = (512 / CHUNK_SIZE as isize).ilog2() as isize;
+fn is_collectible_gold_material_name(name: &str) -> bool {
+    matches!(name, "gold" | "gold_static")
+}
+
+fn should_skip_existing_cell_data(
+    cell_type: CellType,
+    material_type: isize,
+    material_name: &str,
+    incoming: Pixel,
+) -> bool {
+    if material_type == incoming.mat() as isize {
+        return true;
+    }
+    cell_type == CellType::Solid && !is_collectible_gold_material_name(material_name)
+}
+
+fn should_skip_existing_cell(current: &CellData, incoming: Pixel) -> bool {
+    should_skip_existing_cell_data(
+        current.cell_type,
+        current.material_type,
+        current.name.as_ref(),
+        incoming,
+    )
+}
+
 #[allow(unused)]
 trait WorldData {
     unsafe fn encode_world(&self, chunk: &mut NoitaWorldUpdate) -> eyre::Result<()>;
@@ -325,12 +350,7 @@ impl WorldData for ParticleWorldState {
             let cell = pixel_array.get_mut_raw(shift_x + x, shift_y + y);
 
             if let Some(cell) = unsafe { cell.as_ref() } {
-                // Don't touch box2d stuff.
-                if cell.material.cell_type == CellType::Solid {
-                    continue;
-                }
-                // No point replacing cells with themselves.
-                if cell.material.material_type == pixel.mat() as isize {
+                if should_skip_existing_cell(cell.material, pixel) {
                     continue;
                 }
             }
@@ -389,15 +409,57 @@ impl WorldData for ParticleWorldState {
 mod test {
     use noita_api::noita::{
         types::{
-            BiomeModifiers, BiomeModifiersVFTable, Cell, CellData, CellVTable, CellVTables, Chunk,
-            ChunkMap, GridWorld, GridWorldThreaded, GridWorldThreadedVTable, GridWorldVTable,
-            NoneCellVTable, StdVec,
+            BiomeModifiers, BiomeModifiersVFTable, Cell, CellData, CellType, CellVTable,
+            CellVTables, Chunk, ChunkMap, GridWorld, GridWorldThreaded, GridWorldThreadedVTable,
+            GridWorldVTable, NoneCellVTable, StdVec,
         },
         world::ParticleWorldState,
     };
-    use shared::world_sync::{CHUNK_SIZE, ChunkCoord, NoitaWorldUpdate, Pixel};
+    use shared::world_sync::{CHUNK_SIZE, ChunkCoord, NoitaWorldUpdate, Pixel, PixelFlags};
 
-    use crate::modules::world_sync::{SortedSymmetricDifference, SortedUnion, WorldData};
+    use crate::modules::world_sync::{
+        SortedSymmetricDifference, SortedUnion, WorldData, should_skip_existing_cell_data,
+    };
+
+    #[test]
+    fn normal_solid_cells_are_not_replaced_with_air() {
+        assert!(should_skip_existing_cell_data(
+            CellType::Solid,
+            12,
+            "rock_static",
+            Pixel::new(0, PixelFlags::Normal)
+        ));
+    }
+
+    #[test]
+    fn gold_solid_cells_can_be_replaced_with_air() {
+        assert!(!should_skip_existing_cell_data(
+            CellType::Solid,
+            12,
+            "gold",
+            Pixel::new(0, PixelFlags::Normal)
+        ));
+    }
+
+    #[test]
+    fn gold_static_solid_cells_can_be_replaced_with_air() {
+        assert!(!should_skip_existing_cell_data(
+            CellType::Solid,
+            12,
+            "gold_static",
+            Pixel::new(0, PixelFlags::Normal)
+        ));
+    }
+
+    #[test]
+    fn same_material_is_still_skipped() {
+        assert!(should_skip_existing_cell_data(
+            CellType::Solid,
+            12,
+            "gold",
+            Pixel::new(12, PixelFlags::Normal)
+        ));
+    }
 
     #[test]
     pub fn test_world() {
