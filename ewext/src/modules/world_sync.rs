@@ -6,7 +6,7 @@ use noita_api::addr_grabber::Globals;
 use noita_api::heap::Ptr;
 use noita_api::noita::types::*;
 use noita_api::noita::world::ParticleWorldState;
-use rayon::iter::{IntoParallelIterator as _, ParallelIterator as _};
+use rayon::iter::{IntoParallelRefIterator as _, ParallelIterator as _};
 use shared::NoitaOutbound;
 use shared::world_sync::{
     CHUNK_SIZE, ChunkCoord, NoitaWorldUpdate, Pixel, ProxyToWorldSync, WorldSyncToProxy,
@@ -149,6 +149,21 @@ impl Default for WorldSync {
     }
 }
 
+fn select_world_update_chunks(
+    tracked_chunks: &[ChunkCoord],
+    previous_tracked_chunks: &[ChunkCoord],
+    changed_chunks: &[ChunkCoord],
+) -> Vec<ChunkCoord> {
+    SortedUnion::new(
+        SortedSymmetricDifference::new(tracked_chunks.iter(), previous_tracked_chunks.iter()),
+        changed_chunks
+            .iter()
+            .filter(|chunk_pos| tracked_chunks.contains(chunk_pos)),
+    )
+    .copied()
+    .collect::<Vec<_>>()
+}
+
 impl Module for WorldSync {
     fn on_world_init(&mut self, _ctx: &mut ModuleCtx) -> eyre::Result<()> {
         self.particle_world_state = MaybeUninit::new(ParticleWorldState::new()?);
@@ -209,20 +224,14 @@ impl Module for WorldSync {
         had_updates.sort_unstable();
 
         // Get a list of all chunks that either changed their `tracked` state, or ones that have changes detected in them and are tracked.
-        let should_update = SortedUnion::new(
-            SortedSymmetricDifference::new(&tracked_chunks, &self.tracked_chunks_prev),
-            had_updates
-                .iter()
-                .filter(|chunk_pos| tracked_chunks.contains(chunk_pos)),
-        )
-        .copied()
-        .collect::<Vec<_>>();
+        let should_update =
+            select_world_update_chunks(&tracked_chunks, &self.tracked_chunks_prev, &had_updates);
 
         let updates = should_update
-            .into_par_iter()
+            .par_iter()
             .filter_map(|chunk_pos| {
                 let mut update = NoitaWorldUpdate {
-                    coord: chunk_pos,
+                    coord: *chunk_pos,
                     pixels: std::array::from_fn(|_| Pixel::default()),
                 };
                 if unsafe {
@@ -254,7 +263,7 @@ impl Module for WorldSync {
             )),
             1,
             self.world_num,
-            tracked_chunks.clone(),
+            should_update,
         ));
         ctx.net.send(&msg)?;
         self.tracked_chunks_prev = tracked_chunks;
@@ -418,7 +427,8 @@ mod test {
     use shared::world_sync::{CHUNK_SIZE, ChunkCoord, NoitaWorldUpdate, Pixel, PixelFlags};
 
     use crate::modules::world_sync::{
-        SortedSymmetricDifference, SortedUnion, WorldData, should_skip_existing_cell_data,
+        SortedSymmetricDifference, SortedUnion, WorldData, select_world_update_chunks,
+        should_skip_existing_cell_data,
     };
 
     #[test]
@@ -459,6 +469,18 @@ mod test {
             "gold",
             Pixel::new(12, PixelFlags::Normal)
         ));
+    }
+
+    #[test]
+    fn selected_world_update_chunks_include_edges_and_changed_tracked_chunks_only() {
+        let tracked = [ChunkCoord(0, 0), ChunkCoord(1, 0), ChunkCoord(2, 0)];
+        let previous = [ChunkCoord(-1, 0), ChunkCoord(0, 0), ChunkCoord(1, 0)];
+        let changed = [ChunkCoord(1, 0), ChunkCoord(4, 0)];
+
+        assert_eq!(
+            select_world_update_chunks(&tracked, &previous, &changed),
+            vec![ChunkCoord(-1, 0), ChunkCoord(1, 0), ChunkCoord(2, 0)]
+        );
     }
 
     #[test]
