@@ -627,10 +627,13 @@ impl WorldManager {
             let Some(chunks) = self.pending_chunk_packets.get_mut(&peer) else {
                 continue;
             };
-            let chunkpacket = chunks
+            let coords = chunks
                 .keys()
                 .copied()
                 .take(MAX_CHUNK_PACKET_DELTAS_PER_PEER)
+                .collect::<Vec<_>>();
+            let chunkpacket = coords
+                .into_iter()
                 .filter_map(|coord| chunks.remove(&coord))
                 .collect::<Vec<_>>();
             let is_empty = chunks.is_empty();
