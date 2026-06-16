@@ -448,10 +448,10 @@ function OnPlayerSpawned(player_entity) -- This runs when player entity has been
         cos.player_cosmetics(player_entity)
         cos.player_color(player_entity)
     else
-        local damage = ComponentGetValue2(player_entity, "DamageModelComponent")
+        local damage = EntityGetFirstComponentIncludingDisabled(player_entity, "DamageModelComponent")
         if damage ~= nil then
-            ComponentSetValue2(damage, "ui_report_damage", false)
-            ComponentSetValue2(damage, "hp", 2 ^ -38)
+            util.component_set_value2(damage, "ui_report_damage", false)
+            util.component_set_value2(damage, "hp", 2 ^ -38)
         end
         EntityInflictDamage(
             player_entity,

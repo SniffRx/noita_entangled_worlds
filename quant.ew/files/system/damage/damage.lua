@@ -43,9 +43,9 @@ local function do_game_over(message)
 
     local damage_model = EntityGetFirstComponentIncludingDisabled(ctx.my_player.entity, "DamageModelComponent")
     if damage_model ~= nil then
-        ComponentSetValue2(damage_model, "wait_for_kill_flag_on_death", false)
-        ComponentSetValue2(damage_model, "ui_report_damage", false)
-        ComponentSetValue2(damage_model, "hp", 2 ^ -38)
+        util.component_set_value2(damage_model, "wait_for_kill_flag_on_death", false)
+        util.component_set_value2(damage_model, "ui_report_damage", false)
+        util.component_set_value2(damage_model, "hp", 2 ^ -38)
     end
     EntityInflictDamage(ctx.my_player.entity, 1000000, "DAMAGE_CURSE", message, "NONE", 0, 0, GameGetWorldStateEntity())
     GameTriggerGameOver()
@@ -63,7 +63,7 @@ function module.on_local_player_spawn(my_player)
             script_damage_received = "mods/quant.ew/files/system/damage/cbs/send_damage_to_host.lua",
         })
     end
-    ComponentSetValue2(damage_model, "wait_for_kill_flag_on_death", true)
+    util.component_set_value2(damage_model, "wait_for_kill_flag_on_death", true)
 end
 
 function module.on_world_update_client()

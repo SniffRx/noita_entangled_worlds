@@ -103,9 +103,12 @@ local function remove_stuff(ent)
     end
     local damage_model = EntityGetFirstComponentIncludingDisabled(ent, "DamageModelComponent")
     if damage_model ~= nil then
-        ComponentSetValue2(damage_model, "mFireProbability", 0)
-        ComponentSetValue2(damage_model, "mFireFramesLeft", 0)
-        ComponentSetValue2(damage_model, "air_in_lungs", ComponentGetValue2(damage_model, "air_in_lungs_max"))
+        util.component_set_value2(damage_model, "mFireProbability", 0)
+        util.component_set_value2(damage_model, "mFireFramesLeft", 0)
+        local max_air = util.component_get_value2(damage_model, "air_in_lungs_max")
+        if max_air ~= nil then
+            util.component_set_value2(damage_model, "air_in_lungs", max_air)
+        end
     end
 end
 
@@ -398,7 +401,7 @@ local function player_died()
     ctx.my_player.entity = ent + 1
     if ctx.proxy_opt.physics_damage then
         local damage = EntityGetFirstComponentIncludingDisabled(ctx.my_player.entity, "DamageModelComponent")
-        ComponentSetValue2(damage, "physics_objects_damage", true)
+        util.component_set_value2(damage, "physics_objects_damage", true)
     end
     do_switch_effect(false)
     EntitySetName(ctx.my_player.entity, ctx.my_id .. "?")
@@ -477,9 +480,9 @@ local function do_game_over(message)
                 if ctx.my_player.entity ~= nil and EntityGetIsAlive(ctx.my_player.entity) then
                     local damage_model = EntityGetFirstComponent(ctx.my_player.entity, "DamageModelComponent")
                     if damage_model ~= nil then
-                        ComponentSetValue2(damage_model, "wait_for_kill_flag_on_death", false)
-                        ComponentSetValue2(damage_model, "ui_report_damage", false)
-                        ComponentSetValue2(damage_model, "hp", 2 ^ -38)
+                        util.component_set_value2(damage_model, "wait_for_kill_flag_on_death", false)
+                        util.component_set_value2(damage_model, "ui_report_damage", false)
+                        util.component_set_value2(damage_model, "hp", 2 ^ -38)
                         EntityInflictDamage(
                             ctx.my_player.entity,
                             1000000,
@@ -506,7 +509,7 @@ end
 function module.on_local_player_spawn(my_player)
     local damage_model = EntityGetFirstComponentIncludingDisabled(my_player.entity, "DamageModelComponent")
     if damage_model ~= nil then
-        ComponentSetValue2(damage_model, "wait_for_kill_flag_on_death", true)
+        util.component_set_value2(damage_model, "wait_for_kill_flag_on_death", true)
     end
     ctx.my_player.status = { is_alive = true }
 
@@ -641,8 +644,8 @@ function module.on_client_spawned(peer_id, playerdata)
         script_damage_about_to_be_received = "mods/quant.ew/files/system/local_health/immortal.lua",
     })
     local damage_model = EntityGetFirstComponentIncludingDisabled(playerdata.entity, "DamageModelComponent")
-    ComponentSetValue2(damage_model, "wait_for_kill_flag_on_death", true)
-    ComponentSetValue2(damage_model, "physics_objects_damage", false)
+    util.component_set_value2(damage_model, "wait_for_kill_flag_on_death", true)
+    util.component_set_value2(damage_model, "physics_objects_damage", false)
 end
 
 function module.on_client_polymorphed(peer_id, playerdata)
@@ -656,7 +659,7 @@ function module.on_client_polymorphed(peer_id, playerdata)
         script_damage_about_to_be_received = "mods/quant.ew/files/system/local_health/immortal.lua",
     })
     local damage_model = EntityGetFirstComponentIncludingDisabled(playerdata.entity, "DamageModelComponent")
-    ComponentSetValue2(damage_model, "wait_for_kill_flag_on_death", true)
+    util.component_set_value2(damage_model, "wait_for_kill_flag_on_death", true)
 end
 
 --[[function module.health()
@@ -758,10 +761,10 @@ ctx.cap.health = {
                             GameGetWorldStateEntity()
                         )
                     else
-                        local damage = ComponentGetValue2(ctx.my_player.entity, "DamageModelComponent")
+                        local damage = EntityGetFirstComponentIncludingDisabled(ctx.my_player.entity, "DamageModelComponent")
                         if damage ~= nil then
-                            ComponentSetValue2(damage, "ui_report_damage", false)
-                            ComponentSetValue2(damage, "hp", 2 ^ -38)
+                            util.component_set_value2(damage, "ui_report_damage", false)
+                            util.component_set_value2(damage, "hp", 2 ^ -38)
                         end
                         EntityInflictDamage(
                             ctx.my_player.entity,

@@ -334,9 +334,9 @@ local function needs_douse(entity)
     local prot_fire = false
     local prot_toxic = false
     if damage_model ~= nil then
-        local hp = ComponentGetValue2(damage_model, "hp")
-        local max_hp = ComponentGetValue2(damage_model, "max_hp")
-        if hp / max_hp <= 0.05 then
+        local hp, has_hp = util.component_get_value2(damage_model, "hp")
+        local max_hp, has_max_hp = util.component_get_value2(damage_model, "max_hp")
+        if has_hp and has_max_hp and max_hp ~= 0 and hp / max_hp <= 0.05 then
             prot_toxic = true
         end
     end
@@ -558,7 +558,7 @@ local function init_state()
     })
     local damage_model = EntityGetFirstComponentIncludingDisabled(ctx.my_player.entity, "DamageModelComponent")
     if ctx.proxy_opt.no_material_damage then
-        ComponentSetValue2(damage_model, "materials_damage", false)
+        util.component_set_value2(damage_model, "materials_damage", false)
         LoadGameEffectEntityTo(ctx.my_player.entity, "data/entities/misc/effect_protection_fire.xml")
         LoadGameEffectEntityTo(ctx.my_player.entity, "data/entities/misc/effect_protection_radioactivity.xml")
         LoadGameEffectEntityTo(ctx.my_player.entity, "data/entities/misc/effect_breath_underwater.xml")
@@ -1154,7 +1154,8 @@ local function hold_something()
     if state.target ~= nil then
         local polied = EntityHasTag(state.target, "polymorphed")
         local damage = EntityGetFirstComponentIncludingDisabled(state.target, "DamageModelComponent")
-        local in_water = ComponentGetValue2(damage, "mLiquidCount") > 20
+        local liquid_count = util.component_get_value2(damage, "mLiquidCount")
+        local in_water = liquid_count ~= nil and liquid_count > 20
         for j, item in ipairs(state.bad_potions) do
             if polied and EntityHasTag(item, "normal_tablet") then
                 i = j

@@ -13,7 +13,7 @@ local function entity_changed(force)
     if currently_polymorphed then
         local damage_model = EntityGetFirstComponentIncludingDisabled(ctx.my_player.entity, "DamageModelComponent")
         if damage_model ~= nil then
-            ComponentSetValue2(damage_model, "wait_for_kill_flag_on_death", true)
+            util.component_set_value2(damage_model, "wait_for_kill_flag_on_death", true)
         end
         if ctx.my_player.entity == GameGetWorldStateEntity() then
             print("Player entity is equal to WSE, skipping...")
@@ -190,7 +190,7 @@ local function apply_seri_ent(player_data, seri_ent)
 
         local damage_model = EntityGetFirstComponent(ctx.my_player.entity, "DamageModelComponent")
         if damage_model ~= nil then
-            ComponentSetValue2(damage_model, "wait_for_kill_flag_on_death", true)
+            util.component_set_value2(damage_model, "wait_for_kill_flag_on_death", true)
         end
 
         -- Remove all poly-like effects to prevent spawn of another player character when it runs out

@@ -121,8 +121,8 @@ end
 local function remove_fire(entity)
     local damage_model = EntityGetFirstComponentIncludingDisabled(entity, "DamageModelComponent")
     if damage_model ~= nil then
-        ComponentSetValue2(damage_model, "mFireProbability", 0)
-        ComponentSetValue2(damage_model, "mFireFramesLeft", 0)
+        util.component_set_value2(damage_model, "mFireProbability", 0)
+        util.component_set_value2(damage_model, "mFireFramesLeft", 0)
     end
 end
 
@@ -176,10 +176,10 @@ function end_fight.on_world_update()
                 if not GameHasFlagRun("ew_fight_started") then
                     GameAddFlagRun("ew_fight_started")
                 else
-                    local damage = ComponentGetValue2(ctx.my_player.entity, "DamageModelComponent")
+                    local damage = EntityGetFirstComponentIncludingDisabled(ctx.my_player.entity, "DamageModelComponent")
                     if damage ~= nil then
-                        ComponentSetValue2(damage, "ui_report_damage", false)
-                        ComponentSetValue2(damage, "hp", 2 ^ -38)
+                        util.component_set_value2(damage, "ui_report_damage", false)
+                        util.component_set_value2(damage, "hp", 2 ^ -38)
                     end
                     EntityInflictDamage(
                         ctx.my_player.entity,
@@ -197,10 +197,10 @@ function end_fight.on_world_update()
                 np.MagicNumbersSetValue("GRID_FLEXIBLE_MAX_UPDATES", 1)
                 if EntityHasTag(ctx.my_player.entity, "ew_notplayer") then
                     remove_game_effects()
-                    local damage = ComponentGetValue2(ctx.my_player.entity, "DamageModelComponent")
+                    local damage = EntityGetFirstComponentIncludingDisabled(ctx.my_player.entity, "DamageModelComponent")
                     if damage ~= nil then
-                        ComponentSetValue2(damage, "ui_report_damage", false)
-                        ComponentSetValue2(damage, "hp", 2 ^ -38)
+                        util.component_set_value2(damage, "ui_report_damage", false)
+                        util.component_set_value2(damage, "hp", 2 ^ -38)
                     end
                     EntityInflictDamage(
                         ctx.my_player.entity,
