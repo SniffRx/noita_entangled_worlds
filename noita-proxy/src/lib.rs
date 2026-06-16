@@ -2373,7 +2373,7 @@ impl App {
                         egui::Grid::new("Conn status grid")
                             .striped(true)
                             .show(ui, |ui| {
-                                add_per_status_ui(&report, steam, ui);
+                                add_per_status_ui(&report, steam, &netman, ui);
                             });
                         ctx.request_repaint_after(Duration::from_millis(16));
                     }
@@ -2715,6 +2715,7 @@ fn display_with_labels(
 fn add_per_status_ui(
     report: &net::steam_networking::ConnectionStatusReport,
     steam: &steam_helper::SteamState,
+    netman: &Arc<net::NetManager>,
     ui: &mut Ui,
 ) {
     ui.label("Name");
@@ -2734,6 +2735,8 @@ fn add_per_status_ui(
     ui.label("UnAck❓").on_hover_text(
         "Amount of reliable packages that were sent but weren't confirmed as received yet.",
     );
+    ui.label("RelTop❓")
+        .on_hover_text("Top reliable outgoing message categories by bytes in the last 10 seconds.");
     ui.end_row();
 
     for PerPeerStatusEntry { peer, status } in &report.per_peer_statuses {
@@ -2757,6 +2760,21 @@ fn add_per_status_ui(
                 ui.label(format!("{}", realtimeinfo.pending_unreliable()));
                 ui.label(format!("{}", realtimeinfo.pending_reliable()));
                 ui.label(format!("{}", realtimeinfo.sent_unacked_reliable()));
+                let top = netman.outgoing_diagnostics.top_reliable(
+                    (*peer).into(),
+                    std::time::Instant::now(),
+                    3,
+                );
+                if top.is_empty() {
+                    ui.label("-");
+                } else {
+                    let label = top
+                        .into_iter()
+                        .map(|item| format!("{}:{}b/{}", item.category, item.bytes, item.messages))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    ui.label(label);
+                }
             }
             net::steam_networking::PerPeerStatus::AwaitingIncoming => {
                 ui.label("Awa❓")

@@ -1,6 +1,7 @@
 use audio::AudioManager;
 use bitcode::{Decode, Encode};
 use des::DesManager;
+use diagnostics::OutgoingDiagnostics;
 use image::DynamicImage::ImageRgba8;
 use image::{ImageBuffer, Rgba, RgbaImage};
 use messages::{MessageRequest, NetMsg};
@@ -42,6 +43,7 @@ use tangled::Reliability;
 use tracing::{error, info, warn};
 mod audio;
 mod des;
+pub(crate) mod diagnostics;
 pub mod messages;
 mod proxy_opt;
 pub mod steam_networking;
@@ -197,6 +199,7 @@ pub struct NetManager {
     pub nicknames: Mutex<HashMap<OmniPeerId, String>>,
     pub minas: Mutex<HashMap<OmniPeerId, RgbaImage>>,
     pub new_desc: Mutex<Option<PlayerPngDesc>>,
+    pub(crate) outgoing_diagnostics: OutgoingDiagnostics,
     loopback_channel: (
         crossbeam::channel::Sender<NetMsg>,
         crossbeam::channel::Receiver<NetMsg>,
@@ -241,6 +244,7 @@ impl NetManager {
             nicknames: Default::default(),
             minas: Default::default(),
             new_desc: Default::default(),
+            outgoing_diagnostics: Default::default(),
             loopback_channel: crossbeam::channel::unbounded(),
             audio: audio.into(),
             push_to_talk: Default::default(),
@@ -275,6 +279,8 @@ impl NetManager {
         } else {
             let encoded = lz4_flex::compress_prepend_size(&bitcode::encode(msg));
             let len = encoded.len();
+            self.outgoing_diagnostics
+                .record(peer, msg, reliability, len);
             if let Err(err) = self.peer.send(peer, encoded.clone(), reliability) {
                 if cfg!(debug_assertions) {
                     warn!(
@@ -291,6 +297,10 @@ impl NetManager {
     pub(crate) fn broadcast(&self, msg: &NetMsg, reliability: Reliability) {
         let encoded = lz4_flex::compress_prepend_size(&bitcode::encode(msg));
         let len = encoded.len();
+        for peer in self.peer.iter_peer_ids() {
+            self.outgoing_diagnostics
+                .record(peer, msg, reliability, len);
+        }
         if let Err(err) = self.peer.broadcast(encoded, reliability) {
             warn!("Error while broadcasting message of len {}: {}", len, err)
         }
@@ -1274,11 +1284,11 @@ impl NetManager {
                 if let (Some(x), Some(y)) = (x, y) {
                     self.player_pos.0.store(x, Ordering::Relaxed);
                     self.player_pos.1.store(y, Ordering::Relaxed);
-                    self.broadcast(&NetMsg::PlayerPosition(x, y, b, d), Reliability::Reliable);
+                    self.broadcast(&NetMsg::PlayerPosition(x, y, b, d), Reliability::Unreliable);
                     self.send(
                         self.peer.my_id(),
                         &NetMsg::PlayerPosition(x, y, b, d),
-                        Reliability::Reliable,
+                        Reliability::Unreliable,
                     );
                 }
                 let x: Option<u8> = msg.next().and_then(|s| s.parse().ok());
