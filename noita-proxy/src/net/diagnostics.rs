@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
@@ -11,6 +12,8 @@ use super::omni::OmniPeerId;
 use super::world::WorldNetMessage;
 
 const WINDOW: Duration = Duration::from_secs(10);
+const PING_INTERVAL: Duration = Duration::from_secs(1);
+const PING_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Counter {
@@ -43,11 +46,36 @@ pub(crate) struct TrafficSummary {
 #[derive(Debug, Default)]
 struct PeerDiagnostics {
     buckets: VecDeque<Bucket>,
+    pending_ping: Option<PendingPing>,
+    last_rtt: Option<Duration>,
+    last_pong_at: Option<Instant>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy)]
+struct PendingPing {
+    nonce: u64,
+    sent_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PingSummary {
+    pub(crate) rtt: Option<Duration>,
+    pub(crate) last_seen_ago: Option<Duration>,
+}
+
+#[derive(Debug)]
 pub(crate) struct OutgoingDiagnostics {
     peers: std::sync::Mutex<FxHashMap<OmniPeerId, PeerDiagnostics>>,
+    next_ping_nonce: AtomicU64,
+}
+
+impl Default for OutgoingDiagnostics {
+    fn default() -> Self {
+        Self {
+            peers: Default::default(),
+            next_ping_nonce: AtomicU64::new(1),
+        }
+    }
 }
 
 impl OutgoingDiagnostics {
@@ -119,6 +147,57 @@ impl OutgoingDiagnostics {
         totals.truncate(limit);
         totals
     }
+
+    pub(crate) fn begin_ping(&self, peer: OmniPeerId, now: Instant) -> Option<u64> {
+        let mut peers = self.peers.lock().unwrap();
+        let peer_stats = peers.entry(peer).or_default();
+        if let Some(pending) = peer_stats.pending_ping
+            && now.duration_since(pending.sent_at) < PING_INTERVAL
+        {
+            return None;
+        }
+
+        let nonce = self.next_ping_nonce.fetch_add(1, Ordering::Relaxed);
+        peer_stats.pending_ping = Some(PendingPing {
+            nonce,
+            sent_at: now,
+        });
+        Some(nonce)
+    }
+
+    pub(crate) fn record_pong(&self, peer: OmniPeerId, nonce: u64, now: Instant) {
+        let mut peers = self.peers.lock().unwrap();
+        let Some(peer_stats) = peers.get_mut(&peer) else {
+            return;
+        };
+        let Some(pending) = peer_stats.pending_ping else {
+            return;
+        };
+        if pending.nonce != nonce {
+            return;
+        }
+
+        peer_stats.last_rtt = Some(now.duration_since(pending.sent_at));
+        peer_stats.last_pong_at = Some(now);
+        peer_stats.pending_ping = None;
+    }
+
+    pub(crate) fn ping_summary(&self, peer: OmniPeerId, now: Instant) -> PingSummary {
+        let peers = self.peers.lock().unwrap();
+        let Some(peer_stats) = peers.get(&peer) else {
+            return PingSummary::default();
+        };
+        PingSummary {
+            rtt: peer_stats.last_rtt,
+            last_seen_ago: peer_stats
+                .last_pong_at
+                .map(|last_pong_at| now.duration_since(last_pong_at)),
+        }
+    }
+
+    pub(crate) fn ping_timeout() -> Duration {
+        PING_TIMEOUT
+    }
 }
 
 fn prune_old(buckets: &mut VecDeque<Bucket>, now: Instant) {
@@ -149,6 +228,8 @@ pub(crate) fn classify_net_msg(msg: &NetMsg) -> &'static str {
         NetMsg::Mods { .. } => "Mods",
         NetMsg::EndRun => "EndRun",
         NetMsg::Kick => "Kick",
+        NetMsg::Ping(_) => "Ping",
+        NetMsg::Pong(_) => "Pong",
         NetMsg::PeerDisconnected { .. } => "PeerDisconnected",
         NetMsg::StartGame { .. } => "StartGame",
         NetMsg::ModRaw { .. } => "ModRaw",
@@ -269,6 +350,8 @@ mod tests {
 
     #[test]
     fn classifies_high_volume_latest_state_messages() {
+        assert_eq!(classify_net_msg(&NetMsg::Ping(1)), "Ping");
+        assert_eq!(classify_net_msg(&NetMsg::Pong(1)), "Pong");
         assert_eq!(
             classify_net_msg(&NetMsg::PlayerPosition(1, 2, false, true)),
             "PlayerPosition"
@@ -374,5 +457,71 @@ mod tests {
 
         let host = destinations_for(&Destination::Host, OmniPeerId(9));
         assert_eq!(host, vec![OmniPeerId(9)]);
+    }
+
+    #[test]
+    fn tracks_application_level_ping_round_trips() {
+        let stats = OutgoingDiagnostics::default();
+        let peer = OmniPeerId(7);
+        let now = Instant::now();
+
+        let nonce = stats.begin_ping(peer, now).unwrap();
+        assert!(
+            stats
+                .begin_ping(peer, now + Duration::from_millis(100))
+                .is_none()
+        );
+
+        stats.record_pong(peer, nonce + 1, now + Duration::from_millis(50));
+        assert_eq!(
+            stats.ping_summary(peer, now + Duration::from_millis(50)),
+            PingSummary::default()
+        );
+
+        stats.record_pong(peer, nonce, now + Duration::from_millis(42));
+        let summary = stats.ping_summary(peer, now + Duration::from_millis(100));
+        assert_eq!(summary.rtt, Some(Duration::from_millis(42)));
+        assert_eq!(summary.last_seen_ago, Some(Duration::from_millis(58)));
+    }
+
+    #[test]
+    fn replaces_stale_pending_ping_after_interval() {
+        let stats = OutgoingDiagnostics::default();
+        let peer = OmniPeerId(8);
+        let now = Instant::now();
+
+        let first = stats.begin_ping(peer, now).unwrap();
+        let second = stats
+            .begin_ping(peer, now + Duration::from_secs(2))
+            .unwrap();
+
+        assert_ne!(first, second);
+        stats.record_pong(
+            peer,
+            first,
+            now + Duration::from_secs(2) + Duration::from_millis(30),
+        );
+        assert_eq!(
+            stats.ping_summary(
+                peer,
+                now + Duration::from_secs(2) + Duration::from_millis(30)
+            ),
+            PingSummary::default()
+        );
+
+        stats.record_pong(
+            peer,
+            second,
+            now + Duration::from_secs(2) + Duration::from_millis(40),
+        );
+        assert_eq!(
+            stats
+                .ping_summary(
+                    peer,
+                    now + Duration::from_secs(2) + Duration::from_millis(40)
+                )
+                .rtt,
+            Some(Duration::from_millis(40))
+        );
     }
 }

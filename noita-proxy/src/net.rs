@@ -306,6 +306,19 @@ impl NetManager {
         }
     }
 
+    pub(crate) fn connection_ping_timeout(&self) -> Duration {
+        OutgoingDiagnostics::ping_timeout()
+    }
+
+    fn send_connection_pings(&self) {
+        let now = Instant::now();
+        for peer in self.peer.iter_peer_ids() {
+            if let Some(nonce) = self.outgoing_diagnostics.begin_ping(peer, now) {
+                self.send(peer, &NetMsg::Ping(nonce), Reliability::Unreliable);
+            }
+        }
+    }
+
     fn clean_dir(path: PathBuf) {
         let tmp = path.parent().unwrap().join("tmp");
         if tmp.exists() {
@@ -624,6 +637,7 @@ impl NetManager {
                     self.broadcast(&data, Reliability::Reliable)
                 }
             }
+            self.send_connection_pings();
             // Don't do excessive busy-waiting;
             let min_update_time = Duration::from_millis(8);
             let elapsed = last_iter.elapsed();
@@ -728,6 +742,13 @@ impl NetManager {
         sendm: &Sender<FxHashMap<u16, u32>>,
     ) {
         match net_msg {
+            NetMsg::Ping(nonce) => {
+                self.send(src, &NetMsg::Pong(nonce), Reliability::Unreliable);
+            }
+            NetMsg::Pong(nonce) => {
+                self.outgoing_diagnostics
+                    .record_pong(src, nonce, Instant::now());
+            }
             NetMsg::ForwardProxyToWorldSync(msg) => {
                 state.try_ms_write(&NoitaInbound::ProxyToWorldSync(msg));
             }

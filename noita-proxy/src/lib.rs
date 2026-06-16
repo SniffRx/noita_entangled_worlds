@@ -2365,7 +2365,16 @@ impl App {
                 }
                 ConnectedMenu::ConnectionInfo => match &netman.peer {
                     PeerVariant::Tangled(_) => {
-                        ui.label("No connection info available in tangled mode");
+                        egui::Grid::new("Direct IP conn status grid")
+                            .striped(true)
+                            .show(ui, |ui| {
+                                add_tangled_status_ui(&netman, ui);
+                            });
+                        ui.separator();
+                        ui.label(
+                            "Direct IP transport does not expose Steam LocQ/RemQ/In/Out/PenRel/UnAck counters; app ping and RelTop are measured by the proxy.",
+                        );
+                        ctx.request_repaint_after(Duration::from_millis(16));
                     }
                     PeerVariant::Steam(peer) => {
                         let steam = self.steam_state.as_ref().unwrap();
@@ -2712,6 +2721,88 @@ fn display_with_labels(
         })
     });
 }
+
+fn add_tangled_status_ui(netman: &Arc<net::NetManager>, ui: &mut Ui) {
+    ui.label("Name");
+    ui.label("Status");
+    ui.label("Ping");
+    ui.label("LocQвќ“")
+        .on_hover_text("Steam-only metric; not exposed by direct IP transport.");
+    ui.label("RemQвќ“")
+        .on_hover_text("Steam-only metric; not exposed by direct IP transport.");
+    ui.label("In");
+    ui.label("Out");
+    ui.label("MaxSendRate");
+    ui.label("PenUnrвќ“")
+        .on_hover_text("Steam-only metric; not exposed by direct IP transport.");
+    ui.label("PenRelвќ“")
+        .on_hover_text("Steam-only metric; not exposed by direct IP transport.");
+    ui.label("UnAckвќ“")
+        .on_hover_text("Steam-only metric; not exposed by direct IP transport.");
+    ui.label("RelTopвќ“")
+        .on_hover_text("Top reliable outgoing message categories by bytes in the last 10 seconds.");
+    ui.end_row();
+
+    let peers = netman.peer.iter_peer_ids();
+    if peers.is_empty() {
+        ui.label("No peers connected");
+        ui.end_row();
+        return;
+    }
+
+    let now = std::time::Instant::now();
+    let names = netman.nicknames.lock().unwrap().clone();
+    for peer in peers {
+        let name = names
+            .get(&peer)
+            .cloned()
+            .unwrap_or_else(|| peer.to_string());
+        ui.label(name);
+        ui.label("Okвќ“").on_hover_text(format!(
+            "Direct IP transport state: {:?}",
+            netman.peer.state()
+        ));
+
+        let ping = netman.outgoing_diagnostics.ping_summary(peer, now);
+        let is_recent = ping.last_seen_ago <= Some(netman.connection_ping_timeout());
+        match ping.rtt {
+            Some(rtt) if is_recent => {
+                ui.label(format!("{}ms", rtt.as_millis()));
+            }
+            Some(rtt) => {
+                ui.label(format!("{}ms*", rtt.as_millis()))
+                    .on_hover_text("Last ping response is stale.");
+            }
+            None => {
+                ui.label("--")
+                    .on_hover_text("Waiting for proxy ping response.");
+            }
+        }
+
+        for _ in 0..8 {
+            ui.label("n/a");
+        }
+        ui.label(reliable_top_label(netman, peer, now));
+        ui.end_row();
+    }
+}
+
+fn reliable_top_label(
+    netman: &Arc<net::NetManager>,
+    peer: OmniPeerId,
+    now: std::time::Instant,
+) -> String {
+    let top = netman.outgoing_diagnostics.top_reliable(peer, now, 3);
+    if top.is_empty() {
+        "-".to_string()
+    } else {
+        top.into_iter()
+            .map(|item| format!("{}:{}b/{}", item.category, item.bytes, item.messages))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 fn add_per_status_ui(
     report: &net::steam_networking::ConnectionStatusReport,
     steam: &steam_helper::SteamState,
@@ -2760,21 +2851,11 @@ fn add_per_status_ui(
                 ui.label(format!("{}", realtimeinfo.pending_unreliable()));
                 ui.label(format!("{}", realtimeinfo.pending_reliable()));
                 ui.label(format!("{}", realtimeinfo.sent_unacked_reliable()));
-                let top = netman.outgoing_diagnostics.top_reliable(
+                ui.label(reliable_top_label(
+                    netman,
                     (*peer).into(),
                     std::time::Instant::now(),
-                    3,
-                );
-                if top.is_empty() {
-                    ui.label("-");
-                } else {
-                    let label = top
-                        .into_iter()
-                        .map(|item| format!("{}:{}b/{}", item.category, item.bytes, item.messages))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    ui.label(label);
-                }
+                ));
             }
             net::steam_networking::PerPeerStatus::AwaitingIncoming => {
                 ui.label("Awa❓")

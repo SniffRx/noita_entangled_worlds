@@ -19,6 +19,8 @@ pub(crate) enum NetMsg {
     Mods { mods: Vec<String> },
     EndRun,
     Kick,
+    Ping(u64),
+    Pong(u64),
     PeerDisconnected { id: OmniPeerId },
     StartGame { settings: GameSettings, init: bool },
     ModRaw { data: Vec<u8> },
