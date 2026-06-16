@@ -33,6 +33,10 @@ use std::time::Instant;
 pub(crate) static DES_TAG: &str = "ew_des";
 pub(crate) static DES_SCRIPTS_TAG: &str = "ew_des_lua";
 
+fn report_nonfatal(error: eyre::Report) {
+    let _ = print_error(error);
+}
+
 #[derive(Clone)]
 struct EntityEntryPair {
     last: Option<EntityInfo>,
@@ -1083,8 +1087,13 @@ impl LocalDiffModel {
                 && let Some(damage) = entity_manager
                     .try_get_first_component::<DamageModelComponent>(ComponentTag::None)
             {
-                damage.set_max_hp(entity_data.max_hp as f64)?;
-                damage.set_hp(entity_data.hp as f64)?;
+                if let Err(error) = (|| -> eyre::Result<()> {
+                    damage.set_max_hp(entity_data.max_hp as f64)?;
+                    damage.set_hp(entity_data.hp as f64)?;
+                    Ok(())
+                })() {
+                    report_nonfatal(eyre!("Failed to apply pending authority hp: {error:?}"));
+                }
             }
             if !entity_data.drops_gold {
                 let n = entity_manager
@@ -1799,42 +1808,47 @@ impl RemoteDiffModel {
         if let Some(damage) =
             entity_manager.try_get_first_component::<DamageModelComponent>(ComponentTag::None)
         {
-            damage.set_max_hp(entity_info.max_hp as f64)?;
+            if let Err(error) = (|| -> eyre::Result<()> {
+                damage.set_max_hp(entity_info.max_hp as f64)?;
 
-            let current_hp = damage.hp()? as f32;
-            if current_hp > entity_info.hp {
-                let old = damage.object_get_value::<f64>("damage_multipliers", "curse")?;
-                if old != 1.0 {
-                    damage.object_set_value("damage_multipliers", "curse", 1.0)?
+                let current_hp = damage.hp()? as f32;
+                if current_hp > entity_info.hp {
+                    let old = damage.object_get_value::<f64>("damage_multipliers", "curse")?;
+                    if old != 1.0 {
+                        damage.object_set_value("damage_multipliers", "curse", 1.0)?
+                    }
+                    entity.inflict_damage(
+                        (current_hp - entity_info.hp) as f64,
+                        DamageType::DamageCurse,
+                        "hp sync",
+                        None,
+                    )?;
+                    if old != 0.0 {
+                        damage.object_set_value("damage_multipliers", "curse", old)?
+                    }
+                    damage.set_hp(entity_info.hp as f64)?;
+                } else if current_hp < entity_info.hp {
+                    if current_hp < 0.0 && entity_info.hp >= 0.0 {
+                        damage.set_hp(f32::MIN_POSITIVE as f64)?;
+                    }
+                    let old = damage.object_get_value::<f64>("damage_multipliers", "healing")?;
+                    if old != 0.0 {
+                        damage.object_set_value("damage_multipliers", "healing", 1.0)?
+                    }
+                    entity.inflict_damage(
+                        (current_hp - entity_info.hp) as f64,
+                        DamageType::DamageHealing,
+                        "hp sync",
+                        None,
+                    )?;
+                    if old != 0.0 {
+                        damage.object_set_value("damage_multipliers", "healing", old)?
+                    }
+                    damage.set_hp(entity_info.hp as f64)?;
                 }
-                entity.inflict_damage(
-                    (current_hp - entity_info.hp) as f64,
-                    DamageType::DamageCurse,
-                    "hp sync",
-                    None,
-                )?;
-                if old != 0.0 {
-                    damage.object_set_value("damage_multipliers", "curse", old)?
-                }
-                damage.set_hp(entity_info.hp as f64)?;
-            } else if current_hp < entity_info.hp {
-                if current_hp < 0.0 && entity_info.hp >= 0.0 {
-                    damage.set_hp(f32::MIN_POSITIVE as f64)?;
-                }
-                let old = damage.object_get_value::<f64>("damage_multipliers", "healing")?;
-                if old != 0.0 {
-                    damage.object_set_value("damage_multipliers", "healing", 1.0)?
-                }
-                entity.inflict_damage(
-                    (current_hp - entity_info.hp) as f64,
-                    DamageType::DamageHealing,
-                    "hp sync",
-                    None,
-                )?;
-                if old != 0.0 {
-                    damage.object_set_value("damage_multipliers", "healing", old)?
-                }
-                damage.set_hp(entity_info.hp as f64)?;
+                Ok(())
+            })() {
+                report_nonfatal(eyre!("Failed to apply remote entity hp: {error:?}"));
             }
         }
 
@@ -2121,27 +2135,33 @@ impl RemoteDiffModel {
                     .children(Some("protection".into()))
                     .for_each(|ent| ent.kill());
                 self.pending_remove.retain(|l| l != &lid);
-                if !wait_on_kill {
-                    damage.set_wait_for_kill_flag_on_death(false)?;
-                }
-                damage.object_set_value("damage_multipliers", "curse", 1.0)?;
-                entity.inflict_damage(
-                    damage.hp()? + f32::MIN_POSITIVE as f64,
-                    DamageType::DamageCurse,
-                    "kill sync",
-                    responsible_entity,
-                )?;
-                damage.set_ui_report_damage(false)?;
-                entity.inflict_damage(
-                    damage.max_hp()? * 100.0,
-                    DamageType::DamageCurse,
-                    "kill sync",
-                    responsible_entity,
-                )?;
-                if wait_on_kill {
-                    damage.set_kill_now(true)?;
-                } else {
-                    entity.kill()
+                if let Err(error) = (|| -> eyre::Result<()> {
+                    if !wait_on_kill {
+                        damage.set_wait_for_kill_flag_on_death(false)?;
+                    }
+                    damage.object_set_value("damage_multipliers", "curse", 1.0)?;
+                    entity.inflict_damage(
+                        damage.hp()? + f32::MIN_POSITIVE as f64,
+                        DamageType::DamageCurse,
+                        "kill sync",
+                        responsible_entity,
+                    )?;
+                    damage.set_ui_report_damage(false)?;
+                    entity.inflict_damage(
+                        damage.max_hp()? * 100.0,
+                        DamageType::DamageCurse,
+                        "kill sync",
+                        responsible_entity,
+                    )?;
+                    if wait_on_kill {
+                        damage.set_kill_now(true)?;
+                    } else {
+                        entity.kill()
+                    }
+                    Ok(())
+                })() {
+                    report_nonfatal(eyre!("Failed to apply remote entity kill: {error:?}"));
+                    entity.kill();
                 }
             }
         }

@@ -19,7 +19,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use shared::des::DesToProxy::UpdatePositions;
 use shared::{
     Destination, NoitaOutbound, PeerId, RemoteMessage, WorldPos,
-    des::{Gid, InterestRequest, ProjectileFired, RemoteDes},
+    des::{EntityUpdate, Gid, InterestRequest, ProjectileFired, RemoteDes},
 };
 use std::sync::{LazyLock, Mutex};
 mod diff_model;
@@ -157,9 +157,10 @@ impl EntitySync {
         };
         if !self.local_diff_model.update_buffer.is_empty() {
             let res = std::mem::take(&mut self.local_diff_model.update_buffer);
+            let reliable = entity_updates_need_reliable(&res);
             let (RemoteDes::EntityUpdate(diff), err) = send_remotedes_ret(
                 ctx,
-                true,
+                reliable,
                 Destination::Peers(
                     self.interest_tracker
                         .iter_interested()
@@ -515,6 +516,47 @@ impl EntitySync {
             remote.wait_for_gid(entity, gid);
         }
         Ok(())
+    }
+}
+
+fn entity_updates_need_reliable(updates: &[EntityUpdate]) -> bool {
+    updates.iter().any(|update| {
+        matches!(
+            update,
+            EntityUpdate::KillEntity { .. }
+                | EntityUpdate::RemoveEntity(_)
+                | EntityUpdate::LocalizeEntity(_, _)
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_entity_updates_can_be_unreliable() {
+        let updates = [
+            EntityUpdate::CurrentEntity(Lid(1)),
+            EntityUpdate::SetPosition(1.0, 2.0),
+            EntityUpdate::SetHp(3.0),
+        ];
+
+        assert!(!entity_updates_need_reliable(&updates));
+    }
+
+    #[test]
+    fn destructive_entity_updates_stay_reliable() {
+        let updates = [
+            EntityUpdate::CurrentEntity(Lid(1)),
+            EntityUpdate::KillEntity {
+                lid: Lid(1),
+                wait_on_kill: false,
+                responsible_peer: None,
+            },
+        ];
+
+        assert!(entity_updates_need_reliable(&updates));
     }
 }
 

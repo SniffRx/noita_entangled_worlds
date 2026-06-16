@@ -24,6 +24,8 @@ use super::{
 
 pub mod world_model;
 
+const MAX_CHUNK_PACKET_DELTAS_PER_PEER: usize = 8;
+
 #[derive(Debug, Decode, Encode, Clone)]
 pub(crate) enum WorldNetMessage {
     // Authority request
@@ -188,6 +190,9 @@ pub(crate) struct WorldManager {
     chunk_last_update: FxHashMap<ChunkCoord, u64>,
     /// Stores last priority we used for that chunk, in case transfer fails and we'll need to request authority normally.
     last_request_priority: FxHashMap<ChunkCoord, u8>,
+    /// Reliable terrain deltas waiting to be sent to listeners.
+    /// Coalesced by peer and chunk to avoid queuing stale chunk packets during world-gen bursts.
+    pending_chunk_packets: FxHashMap<OmniPeerId, FxHashMap<ChunkCoord, (ChunkDelta, u8)>>,
     world_num: u8,
     pub materials: FxHashMap<u16, (u32, u32, CellType, u32)>,
     is_storage_recent: FxHashSet<ChunkCoord>,
@@ -267,6 +272,7 @@ impl WorldManager {
                     current_update: 0,
                     chunk_last_update: Default::default(),
                     last_request_priority: Default::default(),
+                    pending_chunk_packets: Default::default(),
                     world_num: 0,
                     materials: Default::default(),
                     is_storage_recent: Default::default(),
@@ -299,6 +305,7 @@ impl WorldManager {
                     current_update: 0,
                     chunk_last_update: Default::default(),
                     last_request_priority: Default::default(),
+                    pending_chunk_packets: Default::default(),
                     world_num: 0,
                     materials: Default::default(),
                     is_storage_recent: Default::default(),
@@ -595,10 +602,49 @@ impl WorldManager {
         self.chunk_last_update.clear();
         self.chunk_state.clear();
         self.is_storage_recent.clear();
+        self.pending_chunk_packets.clear();
     }
 
     pub(crate) fn get_emitted_msgs(&mut self) -> Vec<MessageRequest<WorldNetMessage>> {
+        self.flush_pending_chunk_packets();
         mem::take(&mut self.emitted_messages)
+    }
+
+    fn queue_chunk_packet(&mut self, peer: OmniPeerId, delta: ChunkDelta, priority: u8) {
+        self.pending_chunk_packets
+            .entry(peer)
+            .or_default()
+            .insert(delta.chunk_coord, (delta, priority));
+    }
+
+    fn flush_pending_chunk_packets(&mut self) {
+        let peers = self
+            .pending_chunk_packets
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for peer in peers {
+            let Some(chunks) = self.pending_chunk_packets.get_mut(&peer) else {
+                continue;
+            };
+            let chunkpacket = chunks
+                .keys()
+                .copied()
+                .take(MAX_CHUNK_PACKET_DELTAS_PER_PEER)
+                .filter_map(|coord| chunks.remove(&coord))
+                .collect::<Vec<_>>();
+            let is_empty = chunks.is_empty();
+            if !chunkpacket.is_empty() {
+                self.emitted_messages.push(MessageRequest {
+                    reliability: tangled::Reliability::Reliable,
+                    dst: Destination::Peer(peer),
+                    msg: WorldNetMessage::ChunkPacket { chunkpacket },
+                });
+            }
+            if is_empty {
+                self.pending_chunk_packets.remove(&peer);
+            }
+        }
     }
 
     fn emit_msg(&mut self, dst: Destination, msg: WorldNetMessage) {
@@ -3358,14 +3404,10 @@ impl WorldManager {
                             .push((delta.clone(), pri));
                     }
                 }
-                let emit_queue = chunk_packet.into_iter().map(|(peer, chunkpacket)| {
-                    (
-                        Destination::Peer(peer),
-                        WorldNetMessage::ChunkPacket { chunkpacket },
-                    )
-                });
-                for (dst, msg) in emit_queue {
-                    self.emit_msg(dst, msg)
+                for (peer, chunkpacket) in chunk_packet {
+                    for (delta, priority) in chunkpacket {
+                        self.queue_chunk_packet(peer, delta, priority)
+                    }
                 }
                 self.outbound_model.reset_change_tracking();
             }
